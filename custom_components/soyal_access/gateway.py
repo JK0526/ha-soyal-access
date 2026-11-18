@@ -13,8 +13,11 @@ from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
+from .backup import backup_lock
 from .client import BusClient, BusClosedError
 from .const import DOMAIN
+from .event_store import EventStore
+from .event_sync import FifoSync
 from .protocol import Frame, ProtocolError, ReplyFormat, ReplyKind
 
 _LOGGER = logging.getLogger(__name__)
@@ -35,7 +38,7 @@ class StationStatus:
 class GatewayManager:
     """Own one serialized command stream for the configured endpoint."""
 
-    def __init__(self, hass, entry):
+    def __init__(self, hass, entry, *, simulate_fifo=False, allow_remove=False):
         self.hass = hass
         self.entry_id = entry.entry_id
         self.signal = f"{DOMAIN}_{self.entry_id}"
@@ -56,16 +59,33 @@ class GatewayManager:
         self._store = Store(
             hass, 1, f"{DOMAIN}.{key}", private=True, atomic_writes=True
         )
+        self.events = EventStore(
+            Path(hass.config.path("soyal_access", f"{entry.entry_id}.sqlite3")),
+            entry.entry_id,
+            backup_lock(hass),
+        )
         self._client = None
-        if self.enabled:
+        if self.enabled or simulate_fifo:
             self._client = BusClient(
                 entry.data["host"],
                 entry.data["port"],
                 set(self.nodes),
                 timeout=entry.data["timeout"],
-                enable_control=True,
+                enable_control=self.enabled,
+                simulate_fifo=simulate_fifo,
                 link_changed=self._link_changed,
             )
+
+        self.event_sync = (
+            FifoSync(
+                self.events,
+                self._client,
+                allow_remove=allow_remove,
+                control_uncertain=self.uncertain,
+            )
+            if simulate_fifo
+            else None
+        )
 
     def _storage_evidence_exists(self):
         path = Path(self._store.path)
@@ -73,6 +93,7 @@ class GatewayManager:
 
     async def load(self):
         saved = await self._store.async_load()
+        await self.events.open()
         if saved is None:
             # HA renames malformed JSON and returns None. Do not treat that as first setup.
             if not await self.hass.async_add_executor_job(
@@ -84,7 +105,7 @@ class GatewayManager:
             and isinstance(nodes := saved.get("uncertain"), list)
             and all(type(node) is int and 1 <= node <= 255 for node in nodes)
         ):
-            self.uncertain = set(nodes)
+            self.uncertain.update(nodes)
             return
         _LOGGER.error("SOYAL pending control state is invalid; control is blocked")
         self.uncertain.update(self.nodes)
@@ -116,7 +137,7 @@ class GatewayManager:
         await self._store.async_save({"uncertain": sorted(self.uncertain)})
 
     async def control(self, station, action):
-        if self._client is None or self._closed:
+        if not self.enabled or self._closed:
             raise HomeAssistantError("Gateway control is disabled")
         self.waiting += 1
         self._notify()
@@ -199,7 +220,9 @@ class GatewayManager:
 
     async def close(self):
         self._closed = True
+        if self.event_sync is not None:
+            await self.event_sync.close()
         if self._client is not None:
             await self._client.close()
         async with self._lock:
-            pass
+            await self.events.close()

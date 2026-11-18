@@ -32,6 +32,7 @@ class BusClient:
         *,
         timeout: float = 2.0,
         enable_control: bool = False,
+        simulate_fifo: bool = False,
         link_changed: Callable[[bool], None] | None = None,
     ) -> None:
         if not enable_control and host not in ("127.0.0.1", "::1"):
@@ -41,6 +42,10 @@ class BusClient:
         if not 1 <= port <= 65535 or not 0 < timeout < float("inf"):
             raise ValueError("Configure a valid port and positive finite timeout")
         self._allowed = _CONTROL if enable_control else _ALLOWED
+        if simulate_fifo:
+            if host not in ("127.0.0.1", "::1"):
+                raise ValueError("FIFO simulation requires literal loopback")
+            self._allowed = self._allowed | {(0x25, b""), (0x37, b"")}
         self._link_changed = link_changed
         self._host = host
         self._port = port

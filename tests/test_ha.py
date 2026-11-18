@@ -328,3 +328,33 @@ async def test_invalid_control_response_leaves_station_uncertain(hass, reply):
         assert gateway.requests.empty()
         assert entry.runtime_data.uncertain == {1}
         assert entry.runtime_data.status[1].last_response is None
+
+
+async def test_event_storage_lifecycle_and_backup_barrier(hass, tmp_path):
+    from custom_components.soyal_access.backup import (
+        async_post_backup,
+        async_pre_backup,
+    )
+    from custom_components.soyal_access.diagnostics import (
+        async_get_config_entry_diagnostics,
+    )
+
+    hass.config.config_dir = str(tmp_path)
+    with patch("asyncio.open_connection", new_callable=AsyncMock) as connect:
+        entry = await setup_gateway(hass)
+        for _ in range(2):
+            manager = entry.runtime_data
+            assert manager.events.path.parent == tmp_path / "soyal_access"
+            assert manager.event_sync is None
+            await async_pre_backup(hass)
+            diagnostic = asyncio.create_task(
+                async_get_config_entry_diagnostics(hass, entry)
+            )
+            await asyncio.sleep(0)
+            assert not diagnostic.done()
+            await async_post_backup(hass)
+            data = await diagnostic
+            assert data["stations"][1]["saved"] == 0
+            assert await hass.config_entries.async_reload(entry.entry_id)
+            assert manager.events._db is None
+        connect.assert_not_called()

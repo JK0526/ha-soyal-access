@@ -1,6 +1,6 @@
 # SOYAL Access Control
 
-規格 v1.0 · Stage 2.1 · Home Assistant domain `soyal_access`
+規格 v1.0 · Stage 3 · Home Assistant domain `soyal_access`
 
 Stage 2 版本為 `0.2.0`。GitHub 的 HACS 預覽版為 `0.1.1`，本階段驗收使用本機工作樹。
 
@@ -21,7 +21,7 @@ Stage 2 版本為 `0.2.0`。GitHub 的 HACS 預覽版為 `0.1.1`，本階段驗�
 ```sh
 SOYAL_FIELD_RX=.local-rx/field.hex SOYAL_FINAL_RX=.local-rx/final.hex \
   PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m coverage run --branch --source=custom_components.soyal_access \
-  -m pytest -p pytest_asyncio.plugin -q tests/test_client.py tests/test_protocol.py tests/test_rx.py
+  -m pytest -p pytest_asyncio.plugin -q tests/test_client.py tests/test_protocol.py tests/test_rx.py tests/test_fifo.py
 SOYAL_CONTROL_RX=.local-rx/control.hex python3 -m coverage run --append --branch --source=custom_components.soyal_access -m pytest -q tests/test_ha.py
 python3 -m coverage report -m
 python3 -m ruff check
@@ -76,6 +76,24 @@ Stage 2 選擇短連線，沿用已驗證的分包接收器與每筆獨立緩衝
 - 碰到 `uncertain` 時，管理員先停用控制並暫停相關自動化，記下受影響站號與原操作，依現場紀錄或獨立方式確認原命令結果。取得 Gateway 廠商確認的緩衝清除或重置程序後，在受控時段以實測證明舊 RS485 回應不能再送出；重開 TCP 或等待任意秒數不足以證明。
 - 目前沒有強制解封按鈕。安全恢復的管理流程是經驗證排空後，以管理員維護程序停用該整合、備份並審核對應的 HA 待確認資料，只移除已確認的站號記號，最後重新載入並手動啟用控制。端點資料位於 HA 設定目錄下 `.storage/soyal_access.<endpoint-hash>`，雜湊來自規範化 Host、Port 的 Python tuple 表示。若無法確認原結果、儲存資料完整性或 Gateway 緩衝狀態，保留封鎖並交由維護人員處理。切換 Host 別名或移除儲存檔不應作為恢復方法。
 - 有副作用的命令逾時不自動重送。Stage 3 前須實測 Gateway 緩衝邊界、控制 ACK 來源欄位與 Firmware 時序，並為事件刪除建立持久化的讀取、保存、確認及安全恢復流程。常開或刪除是否已生效必須由可驗證的結果判定。
+
+## Stage 3 事件保存與離線同步
+
+資料庫位於 HA 設定目錄的 `soyal_access/<config_entry_id>.sqlite3`。每個 Gateway 有獨立資料庫，以單一工作執行緒執行 SQLite。寫入用 `BEGIN IMMEDIATE`、明確 COMMIT 與錯誤回滾。使用 DELETE journal、FULL synchronous、5 秒 busy timeout 及外鍵。卸載關閉連線，歷史資料永久保留。
+
+| 資料表 | 內容 |
+| --- | --- |
+| `access_events` | 本地 ID、Gateway、站號、控制器時間、接收與更新時間、事件類型、人員位址、Port、原始 BLOB、SHA-256、歷史來源與確認狀態 |
+| `sync_state` | 每站階段、當前事件、原始佇列頭、刪除意圖、可能已送出、保存與確認筆數、最近成功時間及錯誤 |
+| `schema_migrations` | SQLite schema 版本與套用時間 |
+
+控制器時間按原始日曆欄位保存為無時區的本地時間，UTC 接收時間獨立保存。事件摘要供比對，資料表以本地 ID 區分事件。Hosting 的內嵌事件保留在通訊層。所有補讀標記為 `backfill`，即時事件的分界待確認控制器空佇列格式後建立。
+
+同步採站別 FIFO。每次讀取驗證來源、事件碼、長度與校驗值。事件與佇列頭先提交為 `ready_to_delete`，再提交刪除意圖與 `possibly_sent=1` 進入 `delete_in_flight`。收到匹配 ACK，且重新讀取取得不同的有效佇列頭後，才將舊事件標記為確認並保存新檢查點。拒絕、斷線、未知回應、相同佇列頭或檢查點不符均停止該站。重載從已確認檢查點重新核對，未完成的刪除流程保留為 `uncertain`，供人工核對。ACK 遺失後保留封鎖，沒有自動重送。這個流程有持久化檢查點，仍可能遇到內容完全相同且無法辨識的合法事件。
+
+部署時同步停用。離線模擬需要明確開啟 loopback FIFO 模式，並另行開啟刪除。批次逐筆處理，預設每批最多 16 筆、筆間間隔 0.1 秒。同一匯流排的控制操作可在同步交易之間排隊。診斷提供各站保存及確認筆數、速率、狀態與安全錯誤分類。總事件數未知。模擬以明確批次上限結束並提供後續佇列頭，空佇列格式仍待實機確認。
+
+HA Core 備份期間暫停事件資料庫作業。離線驗證實際 Core 封存包含 SQLite 資料庫，即使排除 Recorder，事件與同步狀態均可讀回。SQLite 線上備份使用 backup API。還原審查會寫入新檔並暫停快照內的同步記錄。若使用 HA 的完整還原，先比對所有現場佇列與還原檢查點，再評估是否能安全恢復同步。Stage 4 可在此基礎上加入唯讀歷史查詢、人員對照與 CSV；啟用即時事件與刪除前須先驗證空佇列、重複事件識別與 Gateway 遲到回應。
 
 參考文件
 

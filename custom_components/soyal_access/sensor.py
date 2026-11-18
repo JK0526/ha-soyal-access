@@ -57,6 +57,7 @@ class Outcome(DiagnosticSensor):
         "idle",
         "pending",
         "ack",
+        "data_response",
         "nack",
         "disconnected",
         "uncertain",

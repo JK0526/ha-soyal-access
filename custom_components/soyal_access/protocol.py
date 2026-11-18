@@ -88,10 +88,11 @@ class Reply:
 
 @dataclass(frozen=True, slots=True)
 class ReplyFormat:
-    """Expected data codes and minimum bytes following the source ID."""
+    """Expected data codes and size constraints after the source ID."""
 
     data_codes: frozenset[int] = frozenset()
     min_data_size: int = 0
+    exact_data_size: int | None = None
 
     def classify(self, frame: Frame) -> Reply | None:
         if frame.node != 0:
@@ -103,4 +104,9 @@ class ReplyFormat:
             return None
         if len(frame.payload) < 1 + self.min_data_size:
             raise ProtocolError("SOYAL data reply is missing required bytes")
+        if (
+            self.exact_data_size is not None
+            and len(frame.payload) != 1 + self.exact_data_size
+        ):
+            raise ProtocolError("SOYAL data reply has an unexpected size")
         return Reply(ReplyKind.DATA, frame.payload[0] or None, frame)

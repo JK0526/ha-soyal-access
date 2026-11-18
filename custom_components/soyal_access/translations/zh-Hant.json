@@ -78,6 +78,7 @@
           "idle": "尚未操作",
           "pending": "交易中",
           "ack": "已確認",
+          "data_response": "已收到控制資料回應",
           "nack": "控制器拒絕",
           "disconnected": "已斷線",
           "uncertain": "結果不確定",

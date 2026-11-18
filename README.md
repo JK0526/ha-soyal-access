@@ -1,6 +1,6 @@
 # SOYAL Access Control
 
-規格 v1.0 · Stage 2 · Home Assistant domain `soyal_access`
+規格 v1.0 · Stage 2.1 · Home Assistant domain `soyal_access`
 
 Stage 2 版本為 `0.2.0`。GitHub 的 HACS 預覽版為 `0.1.1`，本階段驗收使用本機工作樹。
 
@@ -9,7 +9,7 @@ Stage 2 版本為 `0.2.0`。GitHub 的 HACS 預覽版為 `0.1.1`，本階段驗�
 1. 安裝此工作樹的 `custom_components/soyal_access` 到測試 HA，重新啟動後從「裝置與服務」新增 **SOYAL Access Control**。
 2. 設定 Gateway 的 Host、TCP 埠（預設 502）、RAW TCP 模式、站號（預設 1,2）、交易逾時及重連冷卻。使用同一個規範化 Host 與埠代表同一條匯流排。同一台設備只能使用一種端點表示，避免另外用 DNS 別名、IP 或其他 TCP 埠加入同一匯流排。
 3. 新增與重新設定只檢查輸入格式。預設停用門鎖控制。啟用後，只有明確呼叫 Button 或 Switch 動作才會建立 TCP 連線；啟動、重載和卸載本身不送控制命令，也不執行任何健康輪詢。
-4. 各站有脈衝開門 Button、常開 Switch、最近通訊狀態、最近有效回應時間、錯誤數、不確定狀態及最後控制結果。Switch 採 `assumed_state`，讀值維持 Unknown，因為目前沒有可信的持續實體回授。ACK 表示控制器確認命令，實體鎖舌狀態未由整合感測。
+4. 各站有脈衝開門 Button、常開 Switch、最近通訊狀態、最近有效回應時間、錯誤數、不確定狀態及最後控制結果。Switch 採 `assumed_state`，讀值維持 Unknown，因為目前沒有可信的持續實體回授。匹配的控制 ACK 或 `0x03` 資料回應表示交易已完成，實體鎖舌狀態未由整合感測。
 5. Gateway Device 提供目前 TCP socket 狀態、排隊數與在途交易屬性、匯流排通訊錯誤數。短連線的 idle 狀態顯示 TCP 未連線。各站的最近通訊狀態初始為 Unknown，計數及時間由本次載入起算。NACK 算有效回應並標記控制遭拒，通訊錯誤計數另計。
 
 每個 Gateway 對應一個 Config Entry 和共用 Manager。站號 Device 及 Entity 的識別碼由 entry ID、站號與實體類別組成，重新排序或增減站號時，其餘 Device 和 Entity 的識別碼不變。重新設定方式為整合項目選單的「重新設定」。
@@ -22,14 +22,14 @@ Stage 2 版本為 `0.2.0`。GitHub 的 HACS 預覽版為 `0.1.1`，本階段驗�
 SOYAL_FIELD_RX=.local-rx/field.hex SOYAL_FINAL_RX=.local-rx/final.hex \
   PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m coverage run --branch --source=custom_components.soyal_access \
   -m pytest -p pytest_asyncio.plugin -q tests/test_client.py tests/test_protocol.py tests/test_rx.py
-python3 -m coverage run --append --branch --source=custom_components.soyal_access -m pytest -q tests/test_ha.py
+SOYAL_CONTROL_RX=.local-rx/control.hex python3 -m coverage run --append --branch --source=custom_components.soyal_access -m pytest -q tests/test_ha.py
 python3 -m coverage report -m
 python3 -m ruff check
 python3 -m ruff format --check
 docker run --platform linux/amd64 --rm -v "$PWD:/github/workspace:ro" ghcr.io/home-assistant/hassfest
 ```
 
-兩批原始 RX 可分別依下表前七列及後六列順序保留在 Git 忽略的 `.local-rx/field.hex`、`.local-rx/final.hex`。未指定原始檔時，只略過對應的原始資料測試。含識別資料的現場擷取檔與測試輸出應留在受控環境。
+兩批原始 RX 可分別依下表前七列及後六列順序保留在 Git 忽略的 `.local-rx/field.hex`、`.local-rx/final.hex`。未指定原始檔時，只略過對應的原始資料測試。控制 RX 可另保留於 Git 忽略的 `.local-rx/control.hex`，每行一筆，依脈衝開門、常開、解除常開排序，每組先站 01 再站 02。未設定 `SOYAL_CONTROL_RX` 時，HA 測試仍會重播匿名化控制回應。含識別資料的現場擷取檔與測試輸出應留在受控環境。
 
 ## 通訊設計
 
@@ -41,7 +41,7 @@ docker run --platform linux/amd64 --rm -v "$PWD:/github/workspace:ro" ghcr.io/ho
 
 ## 驗收紀錄
 
-Python 3.13.3、pytest 9.0.0、Ruff 0.17.3、Coverage.py 7.10.6。39 項 Stage 1 測試與 7 項 HA 測試通過，另有 55 個子測試。傳輸與協定核心覆蓋率 100%，整合整體 97%。Ruff 檢查、格式檢查及 hassfest 通過。
+Python 3.13.3、pytest 9.0.0、Ruff 0.17.3、Coverage.py 7.10.6。39 項 Stage 1 測試與 16 項 HA 測試通過，另有 55 個子測試。傳輸與協定核心覆蓋率 100%，整合整體 97%。Ruff 檢查、格式檢查及 hassfest 通過。
 
 | RX 案例 | 完整長度 | 回應碼 | 來源 | 資料與結果 |
 | --- | ---: | --- | --- | --- |
@@ -68,11 +68,11 @@ Python 3.13.3、pytest 9.0.0、Ruff 0.17.3、Coverage.py 7.10.6。39 項 Stage 1
 | 每筆短連線 | 每筆使用獨立 socket 與緩衝，故障可針對當筆清理。事件批次每筆多一次 TCP 建連與關閉，成本隨交易數增加。TCP 關閉無法清除 Gateway 的 RS485 緩衝。 |
 | 每條匯流排一條長連線 | 批次可重用 socket，省下每筆握手及關閉成本。需要處理閒置斷線、背景接收、無待處理交易時的遲到訊框，以及重連後的同步。效益與相容性需以 Gateway 實測確認。 |
 
-Stage 2 選擇短連線，沿用已驗證的分包接收器與每筆獨立緩衝。同一匯流排以單一 Manager 的 FIFO 等待鎖限制同時最多一筆交易。單一交易由自己持有的讀取工作收訊，ACK/NACK 需帶有匹配站號。斷線後依設定拒絕冷卻期間的請求；冷卻結束後，只接受新的明確操作。短連線避免引入背景收訊、閒置重連及多世代 buffer 管理，未來可於受控 Gateway 驗證完成後評估長連線的批次效益。
+Stage 2 選擇短連線，沿用已驗證的分包接收器與每筆獨立緩衝。同一匯流排以單一 Manager 的 FIFO 等待鎖限制同時最多一筆交易。單一交易由自己持有的讀取工作收訊，控制交易接受來源匹配的 `0x04` ACK 或 `0x03` 11 Bytes I/O 資料回應；來源匹配的 `0x05` NACK 判為拒絕。其他資料碼或資料長度無法確認控制結果。斷線後依設定拒絕冷卻期間的請求；冷卻結束後，只接受新的明確操作。短連線避免引入背景收訊、閒置重連及多世代 buffer 管理，未來可於受控 Gateway 驗證完成後評估長連線的批次效益。
 
 ### 不確定狀態與管理員恢復
 
-- 每次送出控制之前，先以 HA 原子寫入保存對應端點與站號的待確認記號。匹配的 ACK/NACK、或確認尚未寫入 socket 的連線失敗，才可清除記號。已送出但遇到逾時、斷線、校驗錯誤或取消時，站號保持封鎖；重載和重啟不會解除。儲存資料無法辨識時，該 Gateway 的所有站號保持封鎖。
+- 每次送出控制之前，先以 HA 原子寫入保存對應端點與站號的待確認記號。收到匹配的 ACK、NACK 或符合控制格式的資料回應，或確認連線失敗發生於寫入 socket 前，才可清除記號。已送出但遇到逾時、斷線、校驗錯誤或取消時，站號保持封鎖；重載和重啟不會解除。儲存資料無法辨識時，該 Gateway 的所有站號保持封鎖。
 - 碰到 `uncertain` 時，管理員先停用控制並暫停相關自動化，記下受影響站號與原操作，依現場紀錄或獨立方式確認原命令結果。取得 Gateway 廠商確認的緩衝清除或重置程序後，在受控時段以實測證明舊 RS485 回應不能再送出；重開 TCP 或等待任意秒數不足以證明。
 - 目前沒有強制解封按鈕。安全恢復的管理流程是經驗證排空後，以管理員維護程序停用該整合、備份並審核對應的 HA 待確認資料，只移除已確認的站號記號，最後重新載入並手動啟用控制。端點資料位於 HA 設定目錄下 `.storage/soyal_access.<endpoint-hash>`，雜湊來自規範化 Host、Port 的 Python tuple 表示。若無法確認原結果、儲存資料完整性或 Gateway 緩衝狀態，保留封鎖並交由維護人員處理。切換 Host 別名或移除儲存檔不應作為恢復方法。
 - 有副作用的命令逾時不自動重送。Stage 3 前須實測 Gateway 緩衝邊界、控制 ACK 來源欄位與 Firmware 時序，並為事件刪除建立持久化的讀取、保存、確認及安全恢復流程。常開或刪除是否已生效必須由可驗證的結果判定。

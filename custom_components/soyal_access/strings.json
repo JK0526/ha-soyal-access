@@ -78,6 +78,7 @@
           "idle": "Idle",
           "pending": "Pending",
           "ack": "Acknowledged",
+          "data_response": "Control data received",
           "nack": "Rejected",
           "disconnected": "Disconnected",
           "uncertain": "Uncertain",

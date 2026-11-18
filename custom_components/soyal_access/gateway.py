@@ -19,6 +19,10 @@ from .protocol import Frame, ProtocolError, ReplyFormat, ReplyKind
 
 _LOGGER = logging.getLogger(__name__)
 
+# 0x21 door control returns a source ID followed by four I/O data bytes.
+# Other commands can choose their own data codes and payload sizes.
+_CONTROL_21_REPLY = ReplyFormat(frozenset({0x03}), exact_data_size=4)
+
 
 @dataclass(slots=True)
 class StationStatus:
@@ -147,7 +151,7 @@ class GatewayManager:
             raise HomeAssistantError("Unable to save control state") from err
         try:
             reply = await self._client.transact(
-                Frame(station, 0x21, bytes([action])), ReplyFormat()
+                Frame(station, 0x21, bytes([action])), _CONTROL_21_REPLY
             )
         except (OSError, ProtocolError, BusClosedError) as err:
             self.errors += 1
@@ -171,9 +175,13 @@ class GatewayManager:
             raise
         status.reachable = True
         status.last_response = dt_util.utcnow()
-        status.outcome = "ack" if reply.kind is ReplyKind.ACK else "nack"
+        status.outcome = {
+            ReplyKind.ACK: "ack",
+            ReplyKind.NACK: "nack",
+            ReplyKind.DATA: "data_response",
+        }[reply.kind]
         await self._clear_confirmed(station)
-        if reply.kind is not ReplyKind.ACK:
+        if reply.kind is ReplyKind.NACK:
             raise HomeAssistantError("Controller rejected the command")
 
     async def _clear_confirmed(self, station):

@@ -1,6 +1,8 @@
 """Home Assistant lifecycle and control tests against a loopback peer."""
 
 import asyncio
+import os
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -34,6 +36,27 @@ def settings(**changes):
 
 def acknowledge(station, code=4):
     return encode(Frame(0, code, bytes([station])))
+
+
+def io_reply(station, io=0x40):
+    return encode(Frame(0, 0x03, bytes((station, 0xA0, io, 0, 0))))
+
+
+def control_replies(response_kind):
+    if response_kind == "ack":
+        return [acknowledge(node) for node, *_ in FIELD_REQUESTS[:6]]
+    if response_kind == "field":
+        path = os.environ.get("SOYAL_CONTROL_RX")
+        if path is None:
+            pytest.skip("Set SOYAL_CONTROL_RX to replay the six local control captures")
+        return [
+            bytes.fromhex(line)
+            for line in Path(path).read_text(encoding="ascii").splitlines()
+        ]
+    return [
+        io_reply(node, 0 if action == "83" else 0x40)
+        for node, _, action, _ in FIELD_REQUESTS[:6]
+    ]
 
 
 def entity_id(hass, entry, platform, station, key):
@@ -100,7 +123,9 @@ async def test_config_flow_and_reconfigure(hass):
         connect.assert_not_awaited()
 
 
-async def test_devices_actions_and_lifecycle(hass):
+@pytest.mark.parametrize("response_kind", ("ack", "anonymous", "field"))
+async def test_devices_actions_and_lifecycle(hass, response_kind):
+    responses = control_replies(response_kind)
     gateway = SimulatedGateway()
     async with gateway.listen() as port:
         entry = await setup_gateway(hass, port=port, enable_control=True)
@@ -118,14 +143,25 @@ async def test_devices_actions_and_lifecycle(hass):
             "82": ("switch", "hold_open", "turn_on"),
             "83": ("switch", "hold_open", "turn_off"),
         }
-        for node, _, data, field_hex in FIELD_REQUESTS[:6]:
-            gateway.responses.put_nowait(
-                (acknowledge(3) + acknowledge(node)[:3], acknowledge(node)[3:])
-            )
+        for (node, _, data, field_hex), reply in zip(
+            FIELD_REQUESTS[:6], responses, strict=True
+        ):
+            gateway.responses.put_nowait((io_reply(3) + reply[:3], reply[3:]))
             platform, key, action = actions[data]
             await service(hass, entry, platform, node, key, action)
             assert encode(gateway.requests.get_nowait()) == bytes.fromhex(field_hex)
-            assert entry.runtime_data.status[node].last_response is not None
+            status = entry.runtime_data.status[node]
+            assert status.last_response is not None
+            assert status.outcome == (
+                "ack" if response_kind == "ack" else "data_response"
+            )
+            assert node not in entry.runtime_data.uncertain
+            assert (
+                hass.states.get(
+                    entity_id(hass, entry, "switch", node, "hold_open")
+                ).state
+                == STATE_UNKNOWN
+            )
             assert not entry.runtime_data.connected
         assert hass.states.get(switch_id).state == STATE_UNKNOWN
         assert hass.states.get(switch_id).attributes["assumed_state"]
@@ -178,9 +214,11 @@ async def test_nack_serialization_timeout_and_reload(hass):
         with pytest.raises(HomeAssistantError, match="blocked"):
             await manager.control(1, 0x83)
         assert gateway.requests.empty()
-        gateway.responses.put_nowait((acknowledge(1) + acknowledge(2),))
+        gateway.responses.put_nowait((io_reply(1) + io_reply(2),))
         await manager.control(2, 0x83)
         assert gateway.requests.get_nowait().node == 2
+        assert manager.uncertain == {1}
+        assert manager.status[2].outcome == "data_response"
 
 
 async def test_connection_failure_cooldown_and_explicit_retry(hass):
@@ -263,3 +301,30 @@ async def test_ack_with_failed_journal_clear_stays_blocked(hass):
         assert manager.uncertain == {1}
         assert await hass.config_entries.async_reload(entry.entry_id)
         assert entry.runtime_data.uncertain == {1}
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        pytest.param(io_reply(2), id="wrong-station"),
+        pytest.param(io_reply(0), id="unknown-source"),
+        pytest.param(encode(Frame(0, 4)), id="source-less-ack"),
+        pytest.param(
+            io_reply(1)[:-1] + bytes([io_reply(1)[-1] ^ 1]), id="bad-checksum"
+        ),
+        pytest.param(encode(Frame(0, 0x03, bytes([1]) + bytes(3))), id="too-short"),
+        pytest.param(encode(Frame(0, 0x03, bytes([1]) + bytes(12))), id="rtc-length"),
+        pytest.param(encode(Frame(0, 0x09, bytes([1]) + bytes(4))), id="wrong-code"),
+    ],
+)
+async def test_invalid_control_response_leaves_station_uncertain(hass, reply):
+    gateway = SimulatedGateway()
+    async with gateway.listen() as port:
+        entry = await setup_gateway(hass, port=port, enable_control=True)
+        gateway.responses.put_nowait((reply,))
+        with pytest.raises(HomeAssistantError, match="uncertain"):
+            await service(hass, entry, "button", 1, "pulse_open", "press")
+        assert gateway.requests.get_nowait() == Frame(1, 0x21, b"\x84")
+        assert gateway.requests.empty()
+        assert entry.runtime_data.uncertain == {1}
+        assert entry.runtime_data.status[1].last_response is None

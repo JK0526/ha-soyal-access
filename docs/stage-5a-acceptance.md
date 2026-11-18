@@ -1,6 +1,6 @@
 # Stage 5A MVP 實機驗收準備
 
-開發基準 `10dd494`，整合 manifest 版本 `0.2.0`。Stage 5A 的驗證範圍為 HA 測試框架、TCP loopback、SQLite 與備份。下列現場項目保留給管理員另外授權的 Stage 5B。授權可按步驟、Gateway、站號與操作個別記錄。
+開發基準 `10dd494`，整合版本見 [manifest.json](../custom_components/soyal_access/manifest.json)。Stage 5A 的驗證範圍為 HA 測試框架、TCP loopback、SQLite 與備份。下列現場項目保留給管理員另外授權的 Stage 5B。授權可按步驟、Gateway、站號與操作個別記錄。
 
 ## 安裝與啟動檢查
 

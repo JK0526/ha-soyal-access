@@ -6,14 +6,13 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
-import voluptuous as vol
 from homeassistant.config_entries import (
     SOURCE_RECONFIGURE,
     SOURCE_USER,
     ConfigEntryState,
 )
 from homeassistant.const import STATE_UNKNOWN
-from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.data_entry_flow import FlowResultType, InvalidData
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
@@ -88,8 +87,11 @@ async def test_config_flow_and_reconfigure(hass):
             DOMAIN, context={"source": SOURCE_USER}
         )
         assert result["type"] is FlowResultType.FORM
-        with pytest.raises(vol.Invalid):
-            result["data_schema"](settings(timeout="nan"))
+        for value in ("nan", "inf", "-inf"):
+            with pytest.raises(InvalidData):
+                await hass.config_entries.flow.async_configure(
+                    result["flow_id"], settings(timeout=value)
+                )
         invalid = await hass.config_entries.flow.async_configure(
             result["flow_id"], settings(host="https://invalid/", stations="01,1")
         )
@@ -461,3 +463,60 @@ async def test_history_websocket_permissions_and_person_lifecycle(
     assert {"name", "user_address", "employee_id"}.isdisjoint(state.attributes)
     assert await hass.config_entries.async_unload(entry.entry_id)
     assert (await request(admin, "events"))["error"]["code"] == "not_found"
+
+
+async def test_frontend_config_flow_endpoints(hass, hass_client, tmp_path):
+    """Exercise the HTTP endpoints used by Add integration and Reconfigure."""
+    from homeassistant.setup import async_setup_component
+
+    hass.config.config_dir = str(tmp_path)
+    assert await async_setup_component(hass, "config", {})
+    assert await async_setup_component(hass, "websocket_api", {})
+    client = await hass_client()
+    base = "/api/config/config_entries/flow"
+
+    async def post(path, data):
+        response = await client.post(path, json=data)
+        assert response.status == 200, await response.text()
+        return await response.json()
+
+    with patch("asyncio.open_connection", new_callable=AsyncMock) as connect:
+        response = await client.get(f"{base}_handlers")
+        assert response.status == 200
+        assert DOMAIN in await response.json()
+
+        form = await post(base, {"handler": DOMAIN})
+        assert form["type"] == "form" and form["step_id"] == "user"
+        assert {"host", "port", "stations"} <= {
+            field["name"] for field in form["data_schema"]
+        }
+        data = settings(host="Offline-Gateway.test", port=1502, stations="01, 02")
+        created = await post(f"{base}/{form['flow_id']}", data)
+        assert created["type"] == "create_entry"
+        await hass.async_block_till_done()
+        (entry,) = hass.config_entries.async_entries(DOMAIN)
+        assert entry.state is ConfigEntryState.LOADED
+        assert (entry.data["host"], entry.data["port"], entry.data["stations"]) == (
+            "offline-gateway.test",
+            1502,
+            "1,2",
+        )
+
+        duplicate = await post(base, {"handler": DOMAIN})
+        duplicate = await post(f"{base}/{duplicate['flow_id']}", data)
+        assert duplicate["reason"] == "already_configured"
+
+        form = await post(base, {"handler": DOMAIN, "entry_id": entry.entry_id})
+        assert form["type"] == "form" and form["step_id"] == "reconfigure"
+        updated = await post(f"{base}/{form['flow_id']}", data | {"stations": "2,3"})
+        assert updated["reason"] == "reconfigure_successful"
+        await hass.async_block_till_done()
+        assert entry.runtime_data.nodes == (2, 3)
+        previous = entry.runtime_data
+        assert await hass.config_entries.async_unload(entry.entry_id)
+        assert previous.events._db is None
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        assert entry.runtime_data is not previous
+        assert entry.runtime_data.nodes == (2, 3)
+        connect.assert_not_awaited()

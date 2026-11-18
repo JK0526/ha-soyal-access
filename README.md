@@ -2,13 +2,15 @@
 
 規格 v1.0 · Stage 5A · Home Assistant domain `soyal_access`
 
-Stage 2 版本為 `0.2.0`。GitHub 的 HACS 預覽版為 `0.1.1`，本階段驗收使用本機工作樹。
+目前為 Beta 測試版。版本以 [manifest.json](custom_components/soyal_access/manifest.json) 為準，Git 標籤為 manifest 版本加上 `v`。版本紀錄見 [CHANGELOG](CHANGELOG.md)。
+
+若 HA 提示只能使用 YAML，先確認已安裝目錄同時包含帶有 `"config_flow": true` 的 `manifest.json` 與 `config_flow.py`。舊版 `0.1.1` 預覽套件缺少這兩項。從對應 GitHub Release 下載 Source code，解壓後完整替換 HA 設定目錄的 `custom_components/soyal_access`，保留 HA 設定與資料庫，然後重啟 HA Core。已有 Gateway 可使用「重新設定」，新安裝可用「新增整合」。若仍失敗，記錄 HA Core 版本、已安裝 manifest 版本，以及 SOYAL、loader 或 Config Flow 相關錯誤日誌。
 
 [Stage 5A 安裝步驟與雙站驗收表](docs/stage-5a-acceptance.md)
 
 ## Home Assistant 設定與操作
 
-1. 安裝此工作樹的 `custom_components/soyal_access` 到測試 HA，重新啟動後從「裝置與服務」新增 **SOYAL Access Control**。
+1. 安裝此版本的 `custom_components/soyal_access` 到測試 HA，重新啟動後從「裝置與服務」新增 **SOYAL Access Control**。
 2. 設定 Gateway 的 Host、TCP 埠（預設 502）、RAW TCP 模式、站號（預設 1,2）、交易逾時及重連冷卻。使用同一個規範化 Host 與埠代表同一條匯流排。同一台設備只能使用一種端點表示，避免另外用 DNS 別名、IP 或其他 TCP 埠加入同一匯流排。
 3. 新增與重新設定只檢查輸入格式。預設停用門鎖控制。啟用後，只有明確呼叫 Button 或 Switch 動作才會建立 TCP 連線；啟動、重載和卸載本身不送控制命令，也不執行任何健康輪詢。
 4. 各站有脈衝開門 Button、常開 Switch、最近通訊狀態、最近有效回應時間、錯誤數、不確定狀態及最後控制結果。Switch 採 `assumed_state`，讀值維持 Unknown，因為目前沒有可信的持續實體回授。匹配的控制 ACK 或 `0x03` 資料回應表示交易已完成，實體鎖舌狀態未由整合感測。

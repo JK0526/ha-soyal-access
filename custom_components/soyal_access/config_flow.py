@@ -1,7 +1,6 @@
 """Validate gateway settings without opening a socket."""
 
 import ipaddress
-import math
 import re
 
 import voluptuous as vol
@@ -23,12 +22,6 @@ def normalized_host(value: str) -> str:
         return host
 
 
-def finite(value):
-    if not math.isfinite(value):
-        raise vol.Invalid("expected finite duration")
-    return value
-
-
 def schema(defaults):
     return vol.Schema(
         {
@@ -39,11 +32,11 @@ def schema(defaults):
             vol.Required("mode", default=defaults["mode"]): vol.In(["raw_tcp"]),
             vol.Required("stations", default=defaults["stations"]): str,
             vol.Required("timeout", default=defaults["timeout"]): vol.All(
-                vol.Coerce(float), finite, vol.Range(min=0.1, max=60)
+                vol.Coerce(float), vol.Range(min=0.1, max=60)
             ),
             vol.Required(
                 "reconnect_delay", default=defaults["reconnect_delay"]
-            ): vol.All(vol.Coerce(float), finite, vol.Range(min=0, max=60)),
+            ): vol.All(vol.Coerce(float), vol.Range(min=0, max=60)),
             vol.Required("enable_control", default=defaults["enable_control"]): bool,
         }
     )

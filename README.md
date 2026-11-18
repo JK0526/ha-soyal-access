@@ -1,6 +1,6 @@
 # SOYAL Access Control
 
-規格 v1.0 · Stage 1.1 · Home Assistant domain `soyal_access`
+規格 v1.0 · Stage 1 最終驗收 · Home Assistant domain `soyal_access`
 
 目前交付標準 `0x7E` Binary Protocol、本機模擬測試，以及 HACS 開發預覽版 `0.1.1`。
 
@@ -25,7 +25,7 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m coverage run --branch --source=custo
 python3 -m coverage report -m
 ```
 
-原始 RX 可選擇保留在 Git 忽略的 `.local-rx/field.hex`，依下表前七列排序，每行一筆完整 HEX。執行全套驗收時，可在 pytest 或 coverage 指令前加上 `SOYAL_FIELD_RX=.local-rx/field.hex`。測試資料只由本機讀取，沒有原始檔時只略過該項。含識別資料的現場擷取檔與測試輸出應留在受控環境。
+原始 RX 可選擇保留在 Git 忽略的 `.local-rx/field.hex`，依下表前七列排序，每行一筆完整 HEX。最終六筆依下表後六列順序存入 Git 忽略的 `.local-rx/final.hex`。執行完整驗收時，在 pytest 或 coverage 指令前加上 `SOYAL_FIELD_RX=.local-rx/field.hex SOYAL_FINAL_RX=.local-rx/final.hex`。未指定的原始檔測試會略過。含識別資料的現場擷取檔與測試輸出應留在受控環境。
 
 ## 通訊設計
 
@@ -37,7 +37,7 @@ python3 -m coverage report -m
 
 ## 驗收紀錄
 
-Python 3.13.3、pytest 9.0.0、Ruff 0.17.3、Coverage.py 7.10.6。啟用本機原始資料後，33 項測試及 55 個子測試通過，核心 147 個敘述、50 個分支全覆蓋。Ruff 檢查與格式檢查通過。
+Python 3.13.3、pytest 9.0.0、Ruff 0.17.3、Coverage.py 7.10.6。啟用本機原始資料後，39 項測試及 55 個子測試通過，核心 147 個敘述、50 個分支全覆蓋。Ruff 檢查與格式檢查通過。
 
 | RX 案例 | 完整長度 | 回應碼 | 來源 | 資料與結果 |
 | --- | ---: | --- | --- | --- |
@@ -48,11 +48,14 @@ Python 3.13.3、pytest 9.0.0、Ruff 0.17.3、Coverage.py 7.10.6。啟用本機�
 | 事件移除 ACK | 12 | `0x04` | 02 | 原始及匿名化通過 |
 | 控制器參數查詢 NACK | 12 | `0x05` | 02 | 原始及匿名化通過 |
 | RTC | 19 | `0x03` | 02 | 原始及匿名化通過 |
-| 事件 | 31 | `0x0B` | 02 | 合成通過，待完整現場 HEX |
-| Hosting | 38 | `0x09` | 02 | 合成通過，待完整現場 HEX |
-| 人員資料 | 15 | `0x03` | 02 | 合成通過，待完整現場 HEX |
+| Egress 事件 | 31 | `0x10` | 02 | 原始及匿名化通過 |
+| 正常刷卡事件 | 31 | `0x0B` | 01 | 原始及匿名化通過 |
+| Hosting 正常上鎖 | 38 | `0x09` | 02 | 原始及匿名化通過 |
+| Hosting 常開解鎖 | 38 | `0x09` | 02 | 原始及匿名化通過 |
+| 人員資料 A | 15 | `0x03` | 02 | 原始及匿名化通過 |
+| 人員資料 B | 15 | `0x03` | 02 | 原始及匿名化通過 |
 
-每筆驗證標頭、LEN、XOR、SUM、回應碼、來源及編解碼逐 Byte 往返。I/O 額外核對 Offset 6 Bit 6。TCP 模擬涵蓋正確、異站及未知來源的 ACK、NACK、一般資料與 Hosting 回應，以及重連後轉送遲到 ACK。所有網路測試限於本機 loopback，事件移除 ACK 僅離線驗證。Stage 1.1 可驗收已提供的七筆現場 RX 與模擬通訊；完整現場 RX 驗收仍待補齊表中三筆資料。
+每筆驗證標頭、LEN、XOR、SUM、回應碼、來源、逐 Byte 往返及每個分包位置。Hosting 額外核對 Offset 6 Bit 6 與所有內嵌事件位元組。Loopback TCP 測試使用匿名化資料驗證不同長度回應混合分包與黏包。全部 13 筆原始 RX 通過離線驗收。
 
 ## TCP 策略與 Stage 2 建議
 
@@ -62,7 +65,7 @@ Python 3.13.3、pytest 9.0.0、Ruff 0.17.3、Coverage.py 7.10.6。啟用本機�
 | 每條匯流排一條長連線 | 批次可重用 socket，省下每筆握手及關閉成本。需要處理閒置斷線、背景接收、無待處理交易時的遲到訊框，以及重連後的同步。效益與相容性需以 Gateway 實測確認。 |
 
 - 建議在受控驗證證實 Gateway 支援長連線後，將長連線用作批次同步預設。以每條匯流排一個 client 與唯一收訊工作維持單一在途交易，依等待順序派送。資料回應驗證來源與預期碼，無法關聯的回應丟棄。
-- 連線世代可以隔離舊 socket 的資料。若 Gateway 將舊的 RS485 回應送上新 socket，同站同格式回應缺少交易序號，僅靠來源及回應碼無法區分。保留該站的結果未明狀態，取得可驗證的 Gateway 排空或重置訊號才恢復；若要用靜默窗，先證實延遲上限與 Gateway 緩衝行為。重新建 client 本身無法排空 Gateway。
+- 連線世代可以隔離舊 socket 的資料。若 Gateway 將舊的 RS485 回應送上新 socket，同站同格式回應缺少交易序號，僅靠來源及回應碼無法區分。提供可觀測的 `uncertain` 狀態與診斷，取得可驗證的 Gateway 排空或重置訊號才恢復；若要用靜默窗，先證實延遲上限與 Gateway 緩衝行為。重新建 client 本身無法排空 Gateway。刪除事件與常開等有副作用的命令，在逾時後應先確認原操作結果，禁止直接自動重送。
 - Config Entry 由管理者明確輸入 Host、Port 與站號。驗證主機格式、埠號範圍及站號，避免同一匯流排被重複設定。設定驗證只做經核准的 TCP 連通檢查或確認無副作用的查詢。RAW TCP 部署於受控網段，維持 Hosting Polling 預設關閉。
 
 參考文件

@@ -2,6 +2,14 @@
 
 版本來源為 [manifest.json](custom_components/soyal_access/manifest.json)。Git Tag 使用 `v` 前綴。預發佈使用 Semantic Versioning 的 `-beta.N` 或 `-rc.N`，正式版使用不帶預發佈後綴的版本。
 
+## v0.5.1-beta.1
+
+- SessionClient 開放唯讀 0x25，Node 02 每筆完成後等待 500 ms 再讀最舊事件。控制等候時略過背景輪詢。
+- 最舊事件保存至 SQLite，同一檢查點重讀不重複保存。未知 ACK、FIFO 不一致及錯誤停止事件工作，0x37 維持禁止。
+- 健康查詢正常成功時移除持久化未決記號寫入，結果未知仍保留安全封鎖。正常健康時間更新保留於 Manager，僅在線狀態改變時發布。
+- 下載診斷提供事件工作狀態、重複佇列頭次數、TCP 交易筆數與累積耗時。
+- 真實空佇列格式、既有總事件數、500 ms 的現場 RS485 負載仍待驗收。
+
 ## v0.5.0-beta.1
 
 - Gateway 使用共用持續 TCP Session，背景接收與單一在途交易排程，閒置斷線可偵測，監控週期重新連線。

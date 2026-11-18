@@ -1,6 +1,7 @@
 """Persistent stream with one in-flight transaction and strict source matching."""
 
 import asyncio
+from time import monotonic
 
 from .client import BusClient
 from .protocol import FrameBuffer, encode
@@ -19,12 +20,14 @@ class SessionClient(BusClient):
             enable_control=True,
             link_changed=link_changed,
         )
-        self._allowed = {(0x21, b"\x00\x00")}
+        self._allowed = {(0x21, b"\x00\x00"), (0x25, b"")}
         if enable_control:
             self._allowed.update((0x21, bytes([code])) for code in (0x82, 0x83, 0x84))
         self._reader_task = None
         self._writer = None
         self._pending = None
+        self.transaction_count = 0
+        self.transaction_seconds = 0.0
 
     async def _disconnect(self):
         if self._writer is not None:
@@ -77,6 +80,7 @@ class SessionClient(BusClient):
             self._link_changed(True)
 
     async def _exchange(self, request, reply_format):
+        started = monotonic()
         try:
             async with asyncio.timeout(self._timeout):
                 await self._connect()
@@ -92,6 +96,8 @@ class SessionClient(BusClient):
             await self._disconnect()
             raise
         finally:
+            self.transaction_count += 1
+            self.transaction_seconds += monotonic() - started
             self._pending = None
 
     async def close(self):

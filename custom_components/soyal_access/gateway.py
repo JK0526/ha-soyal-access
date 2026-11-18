@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 from hashlib import sha256
@@ -17,8 +18,8 @@ from .backup import backup_lock
 from .client import BusClient, BusClosedError, StationReplyUncertainError
 from .const import DOMAIN
 from .event_store import EventStore
-from .event_sync import FifoSync
-from .protocol import Frame, ProtocolError, ReplyFormat, ReplyKind
+from .event_sync import EVENTS, FifoSync
+from .protocol import Frame, ProtocolError, ReplyFormat, ReplyKind, encode
 from .session import SessionClient
 
 _LOGGER = logging.getLogger(__name__)
@@ -65,6 +66,9 @@ class GatewayManager:
             entry.entry_id,
             backup_lock(hass),
         )
+        self._event_task = None
+        self.event_poll_status = "waiting"
+        self.event_duplicates = 0
         self._monitor_task = None
         self._client = (
             BusClient(
@@ -100,6 +104,46 @@ class GatewayManager:
 
     def start_monitoring(self):
         self._monitor_task = asyncio.create_task(self._monitor())
+        if 2 in self.nodes:
+            self._event_task = asyncio.create_task(self._poll_events())
+
+    async def _poll_events(self):
+        # Completion-based delay prevents overlap or catch-up bursts.
+        while True:
+            await asyncio.sleep(0.5)
+            if self.waiting or self._lock.locked():
+                continue
+            async with self._lock:
+                if 2 in self.uncertain or self._client.is_uncertain(2):
+                    self.event_poll_status = "uncertain"
+                    continue
+                try:
+                    reply = await self._client.transact(Frame(2, 0x25), EVENTS)
+                    if reply.kind is not ReplyKind.DATA:
+                        self.event_poll_status = "unverified_empty_response"
+                        return
+                    raw = encode(reply.frame)
+                    state = await self.events.state(2)
+                    if state["head"] == raw and state["event_id"] is not None:
+                        self.event_duplicates += 1
+                    elif state["phase"] == "idle" and state["head"] is None:
+                        await self.events.save_head(2, raw)
+                    else:
+                        self.event_poll_status = "checkpoint_mismatch"
+                        return
+                    self.event_poll_status = "oldest_event_saved"
+                except (
+                    OSError,
+                    ValueError,
+                    RuntimeError,
+                    HomeAssistantError,
+                    sqlite3.Error,
+                ) as err:
+                    self.event_poll_status = type(err).__name__
+                    if self._client.is_uncertain(2):
+                        self.uncertain.add(2)
+                        await self._save()
+                    return
 
     async def _monitor(self):
         # Startup delay avoids competing with entry initialization.
@@ -115,15 +159,15 @@ class GatewayManager:
                 continue
             for node in self.nodes:
                 status = self.status[node]
+                was_reachable = status.reachable
+                if self.waiting:
+                    continue
                 async with self._lock:
                     if node in self.uncertain:
                         status.reachable = False
                         self._notify()
                         continue
                     try:
-                        # Persist before polling: an I/O reply could match a later control.
-                        self.uncertain.add(node)
-                        await self._save()
                         reply = await self._client.transact(
                             Frame(node, 0x21, b"\x00\x00"), _CONTROL_21_REPLY
                         )
@@ -131,7 +175,6 @@ class GatewayManager:
                             raise ProtocolError("Monitor requires I/O data")
                         status.reachable = True
                         status.last_response = dt_util.utcnow()
-                        await self._clear_confirmed(node)
                     except (
                         OSError,
                         HomeAssistantError,
@@ -141,8 +184,12 @@ class GatewayManager:
                         status.reachable = False
                         status.errors += 1
                         self.errors += 1
+                        if self._client.is_uncertain(node):
+                            self.uncertain.add(node)
+                            await self._save()
                     finally:
-                        self._notify()
+                        if status.reachable != was_reachable:
+                            self._notify()
 
     def _storage_evidence_exists(self):
         path = Path(self._store.path)
@@ -293,6 +340,9 @@ class GatewayManager:
         if self._monitor_task is not None:
             self._monitor_task.cancel()
             await asyncio.gather(self._monitor_task, return_exceptions=True)
+        if self._event_task is not None:
+            self._event_task.cancel()
+            await asyncio.gather(self._event_task, return_exceptions=True)
         if self.event_sync is not None:
             await self.event_sync.close()
         if self._client is not None:

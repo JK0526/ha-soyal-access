@@ -230,7 +230,7 @@ async def test_nack_serialization_timeout_and_reload(hass):
 async def test_connection_failure_cooldown_and_explicit_retry(hass):
     gateway = SimulatedGateway()
     async with gateway.listen() as port:
-        entry = await setup_gateway(hass, port=port, enable_control=True)
+        entry = await setup_gateway(hass, port=port, enable_control=True, stations="1")
         manager = entry.runtime_data
         with (
             patch("asyncio.open_connection", side_effect=ConnectionRefusedError),
@@ -736,4 +736,36 @@ async def test_session_monitor_control_interleaving_and_late_reply(hass):
         assert manager.uncertain == {1}
         with pytest.raises(HomeAssistantError, match="blocked"):
             await manager.control(1, 0x83)
+        assert gateway.requests.empty()
+
+
+async def test_node02_readonly_event_head_deduplication(hass):
+    from custom_components.soyal_access.diagnostics import (
+        async_get_config_entry_diagnostics,
+    )
+
+    gateway = SimulatedGateway()
+    async with gateway.listen() as port:
+        entry = await setup_gateway(hass, port=port, stations="2")
+        manager = entry.runtime_data
+        raw = encode(
+            Frame(0, 0x0B, bytes([2, 5, 4, 3, 2, 1, 11, 26, 7, 0, 20]) + bytes(14))
+        )
+        for _ in range(2):
+            gateway.responses.put_nowait((raw[:8], raw[8:]))
+            request = await asyncio.wait_for(gateway.requests.get(), 2)
+            assert request == Frame(2, 0x25)
+        await asyncio.sleep(0.05)
+        page = await manager.events.history_page({}, None, 10)
+        assert len(page["rows"]) == 1
+        assert page["rows"][0]["user_address"] == 20
+        assert page["rows"][0]["controller_time"] == "2026-11-01T03:04:05"
+        assert manager.event_duplicates == 1
+        diagnostics = await async_get_config_entry_diagnostics(hass, entry)
+        assert diagnostics["transactions"] == 2
+        gateway.responses.put_nowait((acknowledge(2),))
+        assert (await asyncio.wait_for(gateway.requests.get(), 2)) == Frame(2, 0x25)
+        await asyncio.sleep(0.05)
+        assert manager.event_poll_status == "unverified_empty_response"
+        assert not manager.uncertain
         assert gateway.requests.empty()

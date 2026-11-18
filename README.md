@@ -2,7 +2,16 @@
 
 規格 v1.0 · Stage 1.1 · Home Assistant domain `soyal_access`
 
-目前交付標準 `0x7E` Binary Protocol 與本機模擬測試。Home Assistant 安裝與 HACS 發布屬後續階段。
+目前交付標準 `0x7E` Binary Protocol、本機模擬測試，以及 HACS 開發預覽版 `0.1.1`。
+
+## HACS 下載測試
+
+1. 開啟 HACS，從右上角選單選擇「自訂儲存庫」。
+2. 輸入 `https://github.com/JK0526/ha-soyal-access`，類型選擇「整合」，再按「新增」。
+3. 開啟 **SOYAL Access Control** 並按「下載」。若已下載，可由項目選單選擇「重新下載」，測試從預設分支取得檔案。
+4. 下載後可確認 `custom_components/soyal_access/manifest.json` 的版本為 `0.1.1`。
+
+本預覽版可測試下載及檔案更新。Home Assistant 的「新增整合」、設備與實體功能屬 Stage 2。現場通訊不在本預覽版的測試範圍。
 
 ## 執行測試
 

@@ -1,0 +1,10 @@
+{
+  "domain": "soyal_access",
+  "name": "SOYAL Access Control",
+  "codeowners": ["@JK0526"],
+  "documentation": "https://github.com/JK0526/ha-soyal-access#readme",
+  "integration_type": "hub",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/JK0526/ha-soyal-access/issues",
+  "version": "0.1.1"
+}

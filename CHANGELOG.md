@@ -2,6 +2,13 @@
 
 版本來源為 [manifest.json](custom_components/soyal_access/manifest.json)。Git Tag 使用 `v` 前綴。預發佈使用 Semantic Versioning 的 `-beta.N` 或 `-rc.N`，正式版使用不帶預發佈後綴的版本。
 
+## v0.5.1-beta.2
+
+- Node 02 事件預覽預設停用，需明確啟用一次。每次預設 1 筆、上限 5 次，重載不自動重啟。
+- 相同 FIFO 頭只保存一次，重複即停止。區分保存、重複、未驗證空佇列 ACK、NACK、檢查點不符及查詢失敗。
+- 背景查詢僅針對 Node 02，維持長連線與 15 秒健康監控。保留未決控制與可能混淆的遲到回應封鎖。
+- 提供 Node 02 現場步驟與匿名化診斷回傳清單。完整即時 FIFO 同步仍待實機驗收。
+
 ## v0.5.1-beta.1
 
 - SessionClient 開放唯讀 0x25，Node 02 每筆完成後等待 500 ms 再讀最舊事件。控制等候時略過背景輪詢。

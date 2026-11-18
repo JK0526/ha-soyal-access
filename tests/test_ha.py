@@ -697,11 +697,12 @@ async def test_persistent_monitor_without_control(hass):
             manager.start_monitoring()
             for _ in range(4):
                 node, command = await asyncio.wait_for(requests.get(), 2)
-                assert node in (1, 2) and command == b"\x21\x00\x00"
+                assert node == 2 and command == b"\x21\x00\x00"
             assert isinstance(manager._client, SessionClient)
             assert connections == 1
             assert manager.connected
-            assert all(status.reachable for status in manager.status.values())
+            assert manager.status[2].reachable
+            assert manager.status[1].reachable is None
             writers[0].close()
             await writers[0].wait_closed()
             for _ in range(2):
@@ -746,7 +747,13 @@ async def test_node02_readonly_event_head_deduplication(hass):
 
     gateway = SimulatedGateway()
     async with gateway.listen() as port:
-        entry = await setup_gateway(hass, port=port, stations="2")
+        entry = await setup_gateway(
+            hass,
+            port=port,
+            stations="2",
+            node02_event_preview=True,
+            node02_event_limit=5,
+        )
         manager = entry.runtime_data
         raw = encode(
             Frame(0, 0x0B, bytes([2, 5, 4, 3, 2, 1, 11, 26, 7, 0, 20]) + bytes(14))
@@ -763,9 +770,105 @@ async def test_node02_readonly_event_head_deduplication(hass):
         assert manager.event_duplicates == 1
         diagnostics = await async_get_config_entry_diagnostics(hass, entry)
         assert diagnostics["transactions"] == 2
-        gateway.responses.put_nowait((acknowledge(2),))
-        assert (await asyncio.wait_for(gateway.requests.get(), 2)) == Frame(2, 0x25)
+        assert manager.event_poll_status == "duplicate_head"
+        assert manager.event_preview_attempts == 2
+        assert entry.data["node02_event_preview"] is False
+        await asyncio.sleep(0.55)
+        assert gateway.requests.empty()
+        assert await hass.config_entries.async_reload(entry.entry_id)
+        await hass.async_block_till_done()
+        await asyncio.sleep(0.55)
+        assert entry.runtime_data.event_poll_status == "disabled"
+        assert gateway.requests.empty()
+
+
+@pytest.mark.parametrize(
+    ("response", "result"),
+    [
+        (acknowledge(2), "empty_ack_unverified"),
+        (acknowledge(2, 5), "nack"),
+        (encode(Frame(0, 0x7F, b"\x02")), "query_failed_ConnectionError"),
+    ],
+)
+async def test_preview_reply_classification_and_control(hass, response, result):
+    gateway = SimulatedGateway()
+    async with gateway.listen() as port:
+        gateway.responses.put_nowait((response,))
+        entry = await setup_gateway(
+            hass,
+            port=port,
+            stations="2",
+            enable_control=True,
+            node02_event_preview=True,
+            node02_event_limit=5,
+        )
+        manager = entry.runtime_data
+        assert await asyncio.wait_for(gateway.requests.get(), 2) == Frame(2, 0x25)
         await asyncio.sleep(0.05)
-        assert manager.event_poll_status == "unverified_empty_response"
-        assert not manager.uncertain
+        assert manager.event_poll_status == result
+        assert manager.event_preview_attempts == 1
+        if result.startswith("query_failed"):
+            assert manager.uncertain == {2}
+            with pytest.raises(HomeAssistantError, match="blocked"):
+                await manager.control(2, 0x84)
+        else:
+            assert not manager.uncertain
+            gateway.responses.put_nowait((io_reply(2),))
+            await manager.control(2, 0x84)
+            assert gateway.requests.get_nowait() == Frame(2, 0x21, b"\x84")
+        await asyncio.sleep(0.55)
+        assert gateway.requests.empty()
+
+
+async def test_preview_disabled_by_default_and_one_read_limit(hass):
+    gateway = SimulatedGateway()
+    async with gateway.listen() as port:
+        entry = await setup_gateway(hass, port=port, stations="2")
+        await asyncio.sleep(0.55)
+        assert gateway.requests.empty()
+        assert entry.runtime_data.event_poll_status == "disabled"
+        assert await hass.config_entries.async_unload(entry.entry_id)
+        hass.config_entries.async_update_entry(
+            entry, data=dict(entry.data) | {"node02_event_preview": True}
+        )
+        raw = encode(
+            Frame(0, 0x10, bytes([2, 5, 4, 3, 2, 1, 11, 26, 7, 255, 255]) + bytes(14))
+        )
+        gateway.responses.put_nowait((raw,))
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        assert await asyncio.wait_for(gateway.requests.get(), 2) == Frame(2, 0x25)
+        await asyncio.sleep(0.55)
+        assert entry.runtime_data.event_poll_status == "oldest_event_saved"
+        assert entry.runtime_data.event_preview_attempts == 1
+        assert gateway.requests.empty()
+        gateway.responses.put_nowait((io_reply(2),))
+        # Reconfigure enabling control should preserve the saved queue head.
+        hass.config_entries.async_update_entry(
+            entry, data=dict(entry.data) | {"enable_control": True}
+        )
+        assert await hass.config_entries.async_reload(entry.entry_id)
+        await entry.runtime_data.control(2, 0x84)
+        assert gateway.requests.get_nowait() == Frame(2, 0x21, b"\x84")
+
+
+async def test_event_preview_preserves_control_quarantine(hass):
+    gateway = SimulatedGateway()
+    async with gateway.listen() as port:
+        with patch(
+            "custom_components.soyal_access.gateway.Store.async_load",
+            new=AsyncMock(return_value={"uncertain": [2]}),
+        ):
+            entry = await setup_gateway(
+                hass,
+                port=port,
+                stations="2",
+                enable_control=True,
+                node02_event_preview=True,
+                node02_event_limit=5,
+            )
+        await asyncio.sleep(0.55)
+        assert entry.runtime_data.event_poll_status == "uncertain"
+        assert entry.runtime_data.event_preview_attempts == 0
+        with pytest.raises(HomeAssistantError, match="blocked"):
+            await entry.runtime_data.control(2, 0x84)
         assert gateway.requests.empty()

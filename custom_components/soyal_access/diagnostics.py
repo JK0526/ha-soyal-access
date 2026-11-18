@@ -23,6 +23,8 @@ async def async_get_config_entry_diagnostics(hass, entry):
         stations[node]["control_block_reason"] = manager.control_block_reason(node)
     return {
         "automatic_sync": False,
+        "event_preview_attempts": manager.event_preview_attempts,
+        "event_preview_limit": manager.event_preview_limit,
         "node02_event_poll": manager.event_poll_status,
         "repeated_queue_heads": manager.event_duplicates,
         "transactions": getattr(manager._client, "transaction_count", 0),

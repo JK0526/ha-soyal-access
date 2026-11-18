@@ -27,6 +27,11 @@ async def async_setup_entry(hass, entry):
     except BaseException:
         await manager.close()
         raise
+    if entry.data.get("node02_event_preview") is True:
+        # One explicit preview request is consumed; reloads cannot silently rearm it.
+        hass.config_entries.async_update_entry(
+            entry, data=dict(entry.data) | {"node02_event_preview": False}
+        )
     manager.start_monitoring()
     return True
 

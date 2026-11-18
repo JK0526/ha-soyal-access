@@ -66,8 +66,11 @@ class GatewayManager:
             entry.entry_id,
             backup_lock(hass),
         )
+        self.event_preview_enabled = entry.data.get("node02_event_preview") is True
+        self.event_preview_limit = entry.data.get("node02_event_limit", 1)
+        self.event_preview_attempts = 0
         self._event_task = None
-        self.event_poll_status = "waiting"
+        self.event_poll_status = "disabled"
         self.event_duplicates = 0
         self._monitor_task = None
         self._client = (
@@ -104,34 +107,48 @@ class GatewayManager:
 
     def start_monitoring(self):
         self._monitor_task = asyncio.create_task(self._monitor())
-        if 2 in self.nodes:
+        if self.event_preview_enabled and 2 in self.nodes:
+            self.event_poll_status = "waiting"
             self._event_task = asyncio.create_task(self._poll_events())
 
     async def _poll_events(self):
         # Completion-based delay prevents overlap or catch-up bursts.
-        while True:
+        while self.event_preview_attempts < self.event_preview_limit:
             await asyncio.sleep(0.5)
             if self.waiting or self._lock.locked():
                 continue
             async with self._lock:
                 if 2 in self.uncertain or self._client.is_uncertain(2):
                     self.event_poll_status = "uncertain"
-                    continue
+                    return
                 try:
+                    self.event_preview_attempts += 1
                     reply = await self._client.transact(Frame(2, 0x25), EVENTS)
                     if reply.kind is not ReplyKind.DATA:
-                        self.event_poll_status = "unverified_empty_response"
+                        self.event_poll_status = (
+                            "empty_ack_unverified"
+                            if reply.kind is ReplyKind.ACK
+                            else "nack"
+                        )
                         return
                     raw = encode(reply.frame)
                     state = await self.events.state(2)
                     if state["head"] == raw and state["event_id"] is not None:
                         self.event_duplicates += 1
+                        self.event_poll_status = "duplicate_head"
+                        return
                     elif state["phase"] == "idle" and state["head"] is None:
                         await self.events.save_head(2, raw)
                     else:
                         self.event_poll_status = "checkpoint_mismatch"
                         return
                     self.event_poll_status = "oldest_event_saved"
+                except asyncio.CancelledError:
+                    if self._client.is_uncertain(2):
+                        self.uncertain.add(2)
+                        await self._save()
+                        self._notify()
+                    raise
                 except (
                     OSError,
                     ValueError,
@@ -139,10 +156,11 @@ class GatewayManager:
                     HomeAssistantError,
                     sqlite3.Error,
                 ) as err:
-                    self.event_poll_status = type(err).__name__
+                    self.event_poll_status = "query_failed_" + type(err).__name__
                     if self._client.is_uncertain(2):
                         self.uncertain.add(2)
                         await self._save()
+                        self._notify()
                     return
 
     async def _monitor(self):
@@ -158,6 +176,8 @@ class GatewayManager:
                 self._notify()
                 continue
             for node in self.nodes:
+                if node != 2:
+                    continue
                 status = self.status[node]
                 was_reachable = status.reachable
                 if self.waiting:

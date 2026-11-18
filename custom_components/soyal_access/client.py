@@ -1,6 +1,7 @@
-"""Serialized asyncio RAW TCP transport for Stage 1 loopback simulation."""
+"""Serialized asyncio RAW TCP transport for a shared SOYAL bus."""
 
 import asyncio
+from collections.abc import Callable
 from typing import Self
 
 from .protocol import Frame, FrameBuffer, Reply, ReplyFormat, encode
@@ -17,18 +18,30 @@ class StationReplyUncertainError(RuntimeError):
     """A prior request may still produce a reply from this station."""
 
 
+_CONTROL = frozenset((0x21, bytes([code])) for code in (0x82, 0x83, 0x84))
+
+
 class BusClient:
-    """Share one instance across every station on a simulated RS485 bus."""
+    """Share one instance across every station on an RS485 bus."""
 
     def __init__(
-        self, host: str, port: int, stations: set[int], *, timeout: float = 2.0
+        self,
+        host: str,
+        port: int,
+        stations: set[int],
+        *,
+        timeout: float = 2.0,
+        enable_control: bool = False,
+        link_changed: Callable[[bool], None] | None = None,
     ) -> None:
-        if host not in ("127.0.0.1", "::1"):
+        if not enable_control and host not in ("127.0.0.1", "::1"):
             raise ValueError("Stage 1 requires a numeric loopback address")
         if not stations or not all(1 <= station <= 255 for station in stations):
             raise ValueError("Configure nonzero byte-sized stations")
         if not 1 <= port <= 65535 or not 0 < timeout < float("inf"):
             raise ValueError("Configure a valid port and positive finite timeout")
+        self._allowed = _CONTROL if enable_control else _ALLOWED
+        self._link_changed = link_changed
         self._host = host
         self._port = port
         self._stations = frozenset(stations)
@@ -48,8 +61,8 @@ class BusClient:
         """Run one transaction. The timeout starts after acquiring the bus."""
         if request.node not in self._stations:
             raise ValueError("Station is not configured for this bus")
-        if (request.code, request.payload) not in _ALLOWED:
-            raise ValueError("Request is outside the Stage 1 allowlist")
+        if (request.code, request.payload) not in self._allowed:
+            raise ValueError("Request is outside the enabled allowlist")
 
         async with self._lock:
             if self._closed:
@@ -64,12 +77,17 @@ class BusClient:
             finally:
                 self._active = None
 
+    def is_uncertain(self, station: int) -> bool:
+        return station in self._uncertain_stations
+
     async def _exchange(self, request: Frame, reply_format: ReplyFormat) -> Reply:
         # Each exchange has a separate socket and buffer. Never replay a request.
         writer = None
         try:
             async with asyncio.timeout(self._timeout):
                 reader, writer = await asyncio.open_connection(self._host, self._port)
+                if self._link_changed is not None:
+                    self._link_changed(True)
                 packet = encode(request)
                 # A write can succeed in part even when drain fails or is cancelled.
                 self._uncertain_stations.add(request.node)
@@ -92,6 +110,9 @@ class BusClient:
                         await writer.wait_closed()
                 except (OSError, TimeoutError):
                     writer.transport.abort()
+                finally:
+                    if self._link_changed is not None:
+                        self._link_changed(False)
 
     async def close(self) -> None:
         """Cancel the active exchange and prevent queued requests from starting."""

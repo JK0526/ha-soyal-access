@@ -1,31 +1,35 @@
 # SOYAL Access Control
 
-規格 v1.0 · Stage 1 最終驗收 · Home Assistant domain `soyal_access`
+規格 v1.0 · Stage 2 · Home Assistant domain `soyal_access`
 
-目前交付標準 `0x7E` Binary Protocol、本機模擬測試，以及 HACS 開發預覽版 `0.1.1`。
+Stage 2 版本為 `0.2.0`。GitHub 的 HACS 預覽版為 `0.1.1`，本階段驗收使用本機工作樹。
 
-## HACS 下載測試
+## Home Assistant 設定與操作
 
-1. 開啟 HACS，從右上角選單選擇「自訂儲存庫」。
-2. 輸入 `https://github.com/JK0526/ha-soyal-access`，類型選擇「整合」，再按「新增」。
-3. 開啟 **SOYAL Access Control** 並按「下載」。若已下載，可由項目選單選擇「重新下載」，測試從預設分支取得檔案。
-4. 下載後可確認 `custom_components/soyal_access/manifest.json` 的版本為 `0.1.1`。
+1. 安裝此工作樹的 `custom_components/soyal_access` 到測試 HA，重新啟動後從「裝置與服務」新增 **SOYAL Access Control**。
+2. 設定 Gateway 的 Host、TCP 埠（預設 502）、RAW TCP 模式、站號（預設 1,2）、交易逾時及重連冷卻。使用同一個規範化 Host 與埠代表同一條匯流排。同一台設備只能使用一種端點表示，避免另外用 DNS 別名、IP 或其他 TCP 埠加入同一匯流排。
+3. 新增與重新設定只檢查輸入格式。預設停用門鎖控制。啟用後，只有明確呼叫 Button 或 Switch 動作才會建立 TCP 連線；啟動、重載和卸載本身不送控制命令，也不執行任何健康輪詢。
+4. 各站有脈衝開門 Button、常開 Switch、最近通訊狀態、最近有效回應時間、錯誤數、不確定狀態及最後控制結果。Switch 採 `assumed_state`，讀值維持 Unknown，因為目前沒有可信的持續實體回授。ACK 表示控制器確認命令，實體鎖舌狀態未由整合感測。
+5. Gateway Device 提供目前 TCP socket 狀態、排隊數與在途交易屬性、匯流排通訊錯誤數。短連線的 idle 狀態顯示 TCP 未連線。各站的最近通訊狀態初始為 Unknown，計數及時間由本次載入起算。NACK 算有效回應並標記控制遭拒，通訊錯誤計數另計。
 
-本預覽版可測試下載及檔案更新。Home Assistant 的「新增整合」、設備與實體功能屬 Stage 2。現場通訊不在本預覽版的測試範圍。
+每個 Gateway 對應一個 Config Entry 和共用 Manager。站號 Device 及 Entity 的識別碼由 entry ID、站號與實體類別組成，重新排序或增減站號時，其餘 Device 和 Entity 的識別碼不變。重新設定方式為整合項目選單的「重新設定」。
 
 ## 執行測試
 
-核心使用 Python 3.11 以上的標準函式庫。完整驗收使用 pytest、Ruff 與 Coverage.py。
+通訊核心測試可獨立執行。HA 測試使用 Python 3.13、Home Assistant 2026.2.3 與 pytest-homeassistant-custom-component 0.13.316。使用兩次 pytest 執行以隔離 HA 測試外掛的事件迴圈與 socket 限制。
 
 ```sh
-PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q
+SOYAL_FIELD_RX=.local-rx/field.hex SOYAL_FINAL_RX=.local-rx/final.hex \
+  PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m coverage run --branch --source=custom_components.soyal_access \
+  -m pytest -p pytest_asyncio.plugin -q tests/test_client.py tests/test_protocol.py tests/test_rx.py
+python3 -m coverage run --append --branch --source=custom_components.soyal_access -m pytest -q tests/test_ha.py
+python3 -m coverage report -m
 python3 -m ruff check
 python3 -m ruff format --check
-PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m coverage run --branch --source=custom_components.soyal_access -m pytest -q
-python3 -m coverage report -m
+docker run --platform linux/amd64 --rm -v "$PWD:/github/workspace:ro" ghcr.io/home-assistant/hassfest
 ```
 
-原始 RX 可選擇保留在 Git 忽略的 `.local-rx/field.hex`，依下表前七列排序，每行一筆完整 HEX。最終六筆依下表後六列順序存入 Git 忽略的 `.local-rx/final.hex`。執行完整驗收時，在 pytest 或 coverage 指令前加上 `SOYAL_FIELD_RX=.local-rx/field.hex SOYAL_FINAL_RX=.local-rx/final.hex`。未指定的原始檔測試會略過。含識別資料的現場擷取檔與測試輸出應留在受控環境。
+兩批原始 RX 可分別依下表前七列及後六列順序保留在 Git 忽略的 `.local-rx/field.hex`、`.local-rx/final.hex`。未指定原始檔時，只略過對應的原始資料測試。含識別資料的現場擷取檔與測試輸出應留在受控環境。
 
 ## 通訊設計
 
@@ -33,11 +37,11 @@ python3 -m coverage report -m
 - 每筆交易開啟獨立 RAW TCP 連線。交易逾時從取得排程鎖起算，關閉連線另有相同長度的等待上限。送出後若逾時、斷線、校驗失敗或取消，且未取得匹配回應，該站的後續交易在同一 client 生命週期內一律拒絕。其他站可依序建立新連線，原請求不會重送。連線建立失敗時，原站仍可在之後發起新交易。
 - 接收器保留分段資料，依 LEN 提取封包，驗證 XOR 與 SUM。忽略標頭前的雜訊。已找到標頭的候選封包若長度低於下限或 checksum 錯誤，當筆交易失敗。
 - 同一交易要求回應目的節點為主機 `0x00`，且來源 ID 符合請求站號。缺少來源 ID 或來源為 0 的 ACK/NACK 可分類，交易排除這些回應。資料回應由呼叫端指定允許的回應碼與資料最小長度，未知尾端位元組保持原樣。
-- TCP 僅接受數字 loopback 位址，且只允許 `0x18` 空參數、`0x21 00 00` 與 `0x25` 空參數。門鎖及事件刪除封包只作離線編解碼測試。程式沒有背景輪詢或封包內容日誌。
+- Stage 1 預設 transport 僅接受數字 loopback 位址，且只允許 `0x18` 空參數、`0x21 00 00` 與 `0x25` 空參數。Stage 2 已明確啟用控制的 Manager 使用獨立 allowlist，只允許三種門鎖控制命令。程式沒有背景輪詢或封包內容日誌。
 
 ## 驗收紀錄
 
-Python 3.13.3、pytest 9.0.0、Ruff 0.17.3、Coverage.py 7.10.6。啟用本機原始資料後，39 項測試及 55 個子測試通過，核心 147 個敘述、50 個分支全覆蓋。Ruff 檢查與格式檢查通過。
+Python 3.13.3、pytest 9.0.0、Ruff 0.17.3、Coverage.py 7.10.6。39 項 Stage 1 測試與 7 項 HA 測試通過，另有 55 個子測試。傳輸與協定核心覆蓋率 100%，整合整體 97%。Ruff 檢查、格式檢查及 hassfest 通過。
 
 | RX 案例 | 完整長度 | 回應碼 | 來源 | 資料與結果 |
 | --- | ---: | --- | --- | --- |
@@ -57,16 +61,21 @@ Python 3.13.3、pytest 9.0.0、Ruff 0.17.3、Coverage.py 7.10.6。啟用本機�
 
 每筆驗證標頭、LEN、XOR、SUM、回應碼、來源、逐 Byte 往返及每個分包位置。Hosting 額外核對 Offset 6 Bit 6 與所有內嵌事件位元組。Loopback TCP 測試使用匿名化資料驗證不同長度回應混合分包與黏包。全部 13 筆原始 RX 通過離線驗收。
 
-## TCP 策略與 Stage 2 建議
+## Stage 2 TCP 策略
 
 | 策略 | 取捨 |
 | --- | --- |
 | 每筆短連線 | 每筆使用獨立 socket 與緩衝，故障可針對當筆清理。事件批次每筆多一次 TCP 建連與關閉，成本隨交易數增加。TCP 關閉無法清除 Gateway 的 RS485 緩衝。 |
 | 每條匯流排一條長連線 | 批次可重用 socket，省下每筆握手及關閉成本。需要處理閒置斷線、背景接收、無待處理交易時的遲到訊框，以及重連後的同步。效益與相容性需以 Gateway 實測確認。 |
 
-- 建議在受控驗證證實 Gateway 支援長連線後，將長連線用作批次同步預設。以每條匯流排一個 client 與唯一收訊工作維持單一在途交易，依等待順序派送。資料回應驗證來源與預期碼，無法關聯的回應丟棄。
-- 連線世代可以隔離舊 socket 的資料。若 Gateway 將舊的 RS485 回應送上新 socket，同站同格式回應缺少交易序號，僅靠來源及回應碼無法區分。提供可觀測的 `uncertain` 狀態與診斷，取得可驗證的 Gateway 排空或重置訊號才恢復；若要用靜默窗，先證實延遲上限與 Gateway 緩衝行為。重新建 client 本身無法排空 Gateway。刪除事件與常開等有副作用的命令，在逾時後應先確認原操作結果，禁止直接自動重送。
-- Config Entry 由管理者明確輸入 Host、Port 與站號。驗證主機格式、埠號範圍及站號，避免同一匯流排被重複設定。設定驗證只做經核准的 TCP 連通檢查或確認無副作用的查詢。RAW TCP 部署於受控網段，維持 Hosting Polling 預設關閉。
+Stage 2 選擇短連線，沿用已驗證的分包接收器與每筆獨立緩衝。同一匯流排以單一 Manager 的 FIFO 等待鎖限制同時最多一筆交易。單一交易由自己持有的讀取工作收訊，ACK/NACK 需帶有匹配站號。斷線後依設定拒絕冷卻期間的請求；冷卻結束後，只接受新的明確操作。短連線避免引入背景收訊、閒置重連及多世代 buffer 管理，未來可於受控 Gateway 驗證完成後評估長連線的批次效益。
+
+### 不確定狀態與管理員恢復
+
+- 每次送出控制之前，先以 HA 原子寫入保存對應端點與站號的待確認記號。匹配的 ACK/NACK、或確認尚未寫入 socket 的連線失敗，才可清除記號。已送出但遇到逾時、斷線、校驗錯誤或取消時，站號保持封鎖；重載和重啟不會解除。儲存資料無法辨識時，該 Gateway 的所有站號保持封鎖。
+- 碰到 `uncertain` 時，管理員先停用控制並暫停相關自動化，記下受影響站號與原操作，依現場紀錄或獨立方式確認原命令結果。取得 Gateway 廠商確認的緩衝清除或重置程序後，在受控時段以實測證明舊 RS485 回應不能再送出；重開 TCP 或等待任意秒數不足以證明。
+- 目前沒有強制解封按鈕。安全恢復的管理流程是經驗證排空後，以管理員維護程序停用該整合、備份並審核對應的 HA 待確認資料，只移除已確認的站號記號，最後重新載入並手動啟用控制。端點資料位於 HA 設定目錄下 `.storage/soyal_access.<endpoint-hash>`，雜湊來自規範化 Host、Port 的 Python tuple 表示。若無法確認原結果、儲存資料完整性或 Gateway 緩衝狀態，保留封鎖並交由維護人員處理。切換 Host 別名或移除儲存檔不應作為恢復方法。
+- 有副作用的命令逾時不自動重送。Stage 3 前須實測 Gateway 緩衝邊界、控制 ACK 來源欄位與 Firmware 時序，並為事件刪除建立持久化的讀取、保存、確認及安全恢復流程。常開或刪除是否已生效必須由可驗證的結果判定。
 
 參考文件
 

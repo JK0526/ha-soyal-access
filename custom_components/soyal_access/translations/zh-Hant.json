@@ -1,0 +1,89 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "新增 Gateway",
+        "description": "設定時不會連線。啟用控制後，只有手動操作或明確呼叫服務才會送出指令。",
+        "data": {
+          "host": "Gateway 主機",
+          "port": "TCP 埠",
+          "mode": "通訊模式",
+          "stations": "站號（逗號分隔）",
+          "timeout": "交易逾時（秒）",
+          "reconnect_delay": "重連冷卻（秒）",
+          "enable_control": "明確啟用門鎖控制"
+        }
+      },
+      "reconfigure": {
+        "title": "重新設定 Gateway",
+        "description": "設定時不會連線。啟用控制後，只有手動操作或明確呼叫服務才會送出指令。",
+        "data": {
+          "host": "Gateway 主機",
+          "port": "TCP 埠",
+          "mode": "通訊模式",
+          "stations": "站號（逗號分隔）",
+          "timeout": "交易逾時（秒）",
+          "reconnect_delay": "重連冷卻（秒）",
+          "enable_control": "明確啟用門鎖控制"
+        }
+      }
+    },
+    "error": {
+      "invalid_host": "請輸入有效的 IP 或主機名稱。",
+      "invalid_stations": "請輸入不重複的 1 至 255 站號。"
+    },
+    "abort": {
+      "already_configured": "此 Gateway 已設定。",
+      "reconfigure_successful": "已更新 Gateway 設定。"
+    }
+  },
+  "entity": {
+    "button": {
+      "pulse_open": {
+        "name": "脈衝開門"
+      }
+    },
+    "switch": {
+      "hold_open": {
+        "name": "常開"
+      }
+    },
+    "binary_sensor": {
+      "reachable": {
+        "name": "最近站號通訊"
+      },
+      "tcp_connected": {
+        "name": "TCP 已連線"
+      },
+      "uncertain": {
+        "name": "控制結果不確定"
+      }
+    },
+    "sensor": {
+      "queue_depth": {
+        "name": "等候中的交易"
+      },
+      "errors": {
+        "name": "通訊錯誤次數"
+      },
+      "bus_errors": {
+        "name": "匯流排通訊錯誤次數"
+      },
+      "last_response": {
+        "name": "最近有效回應"
+      },
+      "outcome": {
+        "name": "最近控制結果",
+        "state": {
+          "idle": "尚未操作",
+          "pending": "交易中",
+          "ack": "已確認",
+          "nack": "控制器拒絕",
+          "disconnected": "已斷線",
+          "uncertain": "結果不確定",
+          "storage_error": "儲存失敗"
+        }
+      }
+    }
+  }
+}

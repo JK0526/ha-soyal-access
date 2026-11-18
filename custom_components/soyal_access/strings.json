@@ -1,0 +1,89 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Add gateway",
+        "description": "Setup does not connect. If enabled, commands are sent only on an explicit action or service call.",
+        "data": {
+          "host": "Gateway host",
+          "port": "TCP port",
+          "mode": "Transport mode",
+          "stations": "Stations (comma-separated)",
+          "timeout": "Transaction timeout (seconds)",
+          "reconnect_delay": "Reconnect cooldown (seconds)",
+          "enable_control": "Explicitly enable door control"
+        }
+      },
+      "reconfigure": {
+        "title": "Reconfigure gateway",
+        "description": "Setup does not connect. If enabled, commands are sent only on an explicit action or service call.",
+        "data": {
+          "host": "Gateway host",
+          "port": "TCP port",
+          "mode": "Transport mode",
+          "stations": "Stations (comma-separated)",
+          "timeout": "Transaction timeout (seconds)",
+          "reconnect_delay": "Reconnect cooldown (seconds)",
+          "enable_control": "Explicitly enable door control"
+        }
+      }
+    },
+    "error": {
+      "invalid_host": "Enter a valid IP or hostname.",
+      "invalid_stations": "Enter distinct station numbers from 1 to 255."
+    },
+    "abort": {
+      "already_configured": "This gateway is already configured.",
+      "reconfigure_successful": "Gateway configuration updated."
+    }
+  },
+  "entity": {
+    "button": {
+      "pulse_open": {
+        "name": "Pulse open"
+      }
+    },
+    "switch": {
+      "hold_open": {
+        "name": "Hold open"
+      }
+    },
+    "binary_sensor": {
+      "reachable": {
+        "name": "Last station communication"
+      },
+      "tcp_connected": {
+        "name": "TCP connected"
+      },
+      "uncertain": {
+        "name": "Control outcome uncertain"
+      }
+    },
+    "sensor": {
+      "queue_depth": {
+        "name": "Queued transactions"
+      },
+      "errors": {
+        "name": "Communication errors"
+      },
+      "bus_errors": {
+        "name": "Bus communication errors"
+      },
+      "last_response": {
+        "name": "Last valid response"
+      },
+      "outcome": {
+        "name": "Last control outcome",
+        "state": {
+          "idle": "Idle",
+          "pending": "Pending",
+          "ack": "Acknowledged",
+          "nack": "Rejected",
+          "disconnected": "Disconnected",
+          "uncertain": "Uncertain",
+          "storage_error": "Storage error"
+        }
+      }
+    }
+  }
+}

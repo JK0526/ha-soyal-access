@@ -1,6 +1,6 @@
 # SOYAL Access Control
 
-規格 v1.0 · Stage 3 · Home Assistant domain `soyal_access`
+規格 v1.0 · Stage 4 MVP · Home Assistant domain `soyal_access`
 
 Stage 2 版本為 `0.2.0`。GitHub 的 HACS 預覽版為 `0.1.1`，本階段驗收使用本機工作樹。
 
@@ -21,7 +21,7 @@ Stage 2 版本為 `0.2.0`。GitHub 的 HACS 預覽版為 `0.1.1`，本階段驗�
 ```sh
 SOYAL_FIELD_RX=.local-rx/field.hex SOYAL_FINAL_RX=.local-rx/final.hex \
   PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m coverage run --branch --source=custom_components.soyal_access \
-  -m pytest -p pytest_asyncio.plugin -q tests/test_client.py tests/test_protocol.py tests/test_rx.py tests/test_fifo.py
+  -m pytest -p pytest_asyncio.plugin -q tests/test_client.py tests/test_protocol.py tests/test_rx.py tests/test_fifo.py tests/test_history.py
 SOYAL_CONTROL_RX=.local-rx/control.hex python3 -m coverage run --append --branch --source=custom_components.soyal_access -m pytest -q tests/test_ha.py
 python3 -m coverage report -m
 python3 -m ruff check
@@ -94,6 +94,25 @@ Stage 2 選擇短連線，沿用已驗證的分包接收器與每筆獨立緩衝
 部署時同步停用。離線模擬需要明確開啟 loopback FIFO 模式，並另行開啟刪除。批次逐筆處理，預設每批最多 16 筆、筆間間隔 0.1 秒。同一匯流排的控制操作可在同步交易之間排隊。診斷提供各站保存及確認筆數、速率、狀態與安全錯誤分類。總事件數未知。模擬以明確批次上限結束並提供後續佇列頭，空佇列格式仍待實機確認。
 
 HA Core 備份期間暫停事件資料庫作業。離線驗證實際 Core 封存包含 SQLite 資料庫，即使排除 Recorder，事件與同步狀態均可讀回。SQLite 線上備份使用 backup API。還原審查會寫入新檔並暫停快照內的同步記錄。若使用 HA 的完整還原，先比對所有現場佇列與還原檢查點，再評估是否能安全恢復同步。Stage 4 可在此基礎上加入唯讀歷史查詢、人員對照與 CSV；啟用即時事件與刪除前須先驗證空佇列、重複事件識別與 Gateway 遲到回應。
+
+## Stage 4 MVP 人員對照與歷史
+
+每站的「最近已保存事件」Sensor 顯示事件類型，屬性提供控制器原始時間、UTC 匯入時間、事件來源與同步階段。此實體定期讀取本機 SQLite。含姓名、員工編號與 User Address 的完整內容透過管理員 WebSocket 查詢。歷史補讀只更新已保存紀錄的狀態，整合沒有發送即時通行事件。
+
+SQLite schema v2 在原有交易中新增 `people` 表與歷史索引。每筆 Config Entry 沿用獨立資料庫，人員以站號和 User Address 識別。遷移在失敗時回滾，已有事件的原始 BLOB 保留。備份與審查還原支援 v1、v2。
+
+用 HA 管理員身分連線至 `/api/websocket`。每項命令都需提供唯一的請求 `id` 和對應的 `entry_id`。
+
+| type | 參數與用途 |
+| --- | --- |
+| `soyal_access/events` | 可選 `filters`，包含 `start`、`end`（含首尾的控制器日曆日期）、`station`、`user_address`、`name`（子字串）、`event_type`（數字）。省略篩選並指定 `limit: 1` 可查最新完整紀錄。 |
+| `soyal_access/people` | 可選 `filters`，包含 `station`、`user_address`、`name`。 |
+| `soyal_access/person/save` | `action` 為 `create` 或 `update`，同時提供 `station`、`user_address`、`name`。可選 `employee_id`。以 `update` 省略員工編號會清空該欄。 |
+| `soyal_access/person/delete` | 提供 `station` 和 `user_address` 以移除本地對照。 |
+
+清單回傳 `rows` 與 `next_cursor`。每頁預設 50 筆、上限 200 筆。下一頁維持相同篩選，將 `next_cursor` 傳入 `cursor`。歷史依控制器時間及本地 ID 由新至舊排序。未知事件碼保留為原始數字。查詢以當前姓名表對照歷史，未建對照時 `display_name` 使用 User Address。人員編號重新分配後，舊事件的顯示姓名可能改變，原始事件與人員位址仍可供人工核對。歷史姓名可信度以「目前對照」理解。
+
+歷史與人員的圖形管理介面留待驗收後決定。本階段交付 HA 原生摘要與可測試的管理員後端。
 
 參考文件
 

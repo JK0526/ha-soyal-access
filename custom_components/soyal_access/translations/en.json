@@ -84,6 +84,9 @@
           "uncertain": "Uncertain",
           "storage_error": "Storage error"
         }
+      },
+      "latest_stored_event": {
+        "name": "Latest stored event"
       }
     }
   }

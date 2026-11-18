@@ -84,6 +84,9 @@
           "uncertain": "結果不確定",
           "storage_error": "儲存失敗"
         }
+      },
+      "latest_stored_event": {
+        "name": "最近已保存事件"
       }
     }
   }

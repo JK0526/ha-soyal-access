@@ -6,6 +6,7 @@ from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 from homeassistant.helpers.entity import EntityCategory
 
 from .entity import SoyalEntity
+from .history import EVENT_TYPES
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
@@ -19,6 +20,34 @@ async def async_setup_entry(hass, entry, async_add_entities):
             *(Outcome(manager, node, "outcome") for node in manager.nodes),
         ]
     )
+
+    async_add_entities(
+        [
+            LatestStoredEvent(manager, node, "latest_stored_event")
+            for node in manager.nodes
+        ],
+        update_before_add=True,
+    )
+
+
+class LatestStoredEvent(SoyalEntity, SensorEntity):
+    """Non-identifying summary of the last stored event."""
+
+    _attr_should_poll = True
+
+    async def async_update(self):
+        event, phase = await self.manager.events.station_summary(self.station)
+        self._attr_extra_state_attributes = {"sync_phase": phase}
+        if event is None:
+            self._attr_native_value = None
+            return
+        code = event["event_type"]
+        self._attr_native_value = EVENT_TYPES.get(code, f"0x{code:02X}")
+        self._attr_extra_state_attributes.update(
+            controller_time=event["controller_time"],
+            imported_at=event["received_at"].replace(" ", "T") + "Z",
+            origin=event["origin"],
+        )
 
 
 class DiagnosticSensor(SoyalEntity, SensorEntity):

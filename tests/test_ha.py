@@ -358,3 +358,99 @@ async def test_event_storage_lifecycle_and_backup_barrier(hass, tmp_path):
             assert await hass.config_entries.async_reload(entry.entry_id)
             assert manager.events._db is None
         connect.assert_not_called()
+
+
+async def test_history_websocket_permissions_and_person_lifecycle(
+    hass, hass_ws_client, hass_read_only_user, tmp_path
+):
+    hass.config.config_dir = str(tmp_path)
+    entry = await setup_gateway(hass)
+    admin = await hass_ws_client()
+    token = await hass.auth.async_create_refresh_token(
+        hass_read_only_user, "https://example.test"
+    )
+    reader = await hass_ws_client(
+        access_token=hass.auth.async_create_access_token(token)
+    )
+    store = entry.runtime_data.events
+
+    async def request(client, endpoint, **data):
+        await client.send_json_auto_id(
+            {"type": f"soyal_access/{endpoint}", "entry_id": entry.entry_id, **data}
+        )
+        return await client.receive_json()
+
+    identity = {"station": 1, "user_address": 28}
+    person = identity | {"name": "林小君", "employee_id": "A01"}
+    for endpoint, data in (
+        ("events", {}),
+        ("people", {}),
+        ("person/save", {"action": "create", **person}),
+        ("person/delete", identity),
+    ):
+        assert (await request(reader, endpoint, **data))["error"][
+            "code"
+        ] == "unauthorized"
+
+    assert (await request(admin, "person/save", action="create", **person))["success"]
+    assert (await request(admin, "person/save", action="create", **person))["error"][
+        "code"
+    ] == "conflict"
+    assert (
+        await request(
+            admin, "person/save", action="create", **(person | {"station": 2})
+        )
+    )["success"]
+    assert (
+        len(
+            (await request(admin, "people", filters={"user_address": 28}))["result"][
+                "rows"
+            ]
+        )
+        == 2
+    )
+
+    await store.state(1)
+    raw = encode(
+        Frame(0, 0x0B, bytes([1, 5, 4, 3, 2, 1, 11, 26, 7, 0, 28]) + bytes(14))
+    )
+    await store.save_head(1, raw)
+    filters = identity | {
+        "name": "林",
+        "start": "2026-11-01",
+        "end": "2026-11-01",
+        "event_type": 0x0B,
+    }
+    event = (await request(admin, "events", filters=filters))["result"]["rows"][0]
+    assert event["name"] == "林小君" and event["origin"] == "backfill"
+    assert event["controller_time"] == "2026-11-01T03:04:05" and event[
+        "received_at"
+    ].endswith("Z")
+    assert {"raw", "digest"}.isdisjoint(event)
+    assert (await request(admin, "events", filters={"name": "' OR 1=1 --"}))["result"][
+        "rows"
+    ] == []
+    assert not (await request(admin, "events", limit=201))["success"]
+    assert not (await request(admin, "events", filters={"start": "2026-02-30"}))[
+        "success"
+    ]
+
+    assert (
+        await request(
+            admin, "person/save", action="update", **(person | {"name": "陳小美"})
+        )
+    )["success"]
+    assert (await request(admin, "events"))["result"]["rows"][0]["name"] == "陳小美"
+    assert (await request(admin, "person/delete", **identity))["success"]
+    fallback = (await request(admin, "events"))["result"]["rows"][0]
+    assert fallback["name"] is None and fallback["display_name"] == "28"
+
+    assert await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    state = hass.states.get(entity_id(hass, entry, "sensor", 1, "latest_stored_event"))
+    assert state.state == "card"
+    assert state.attributes["sync_phase"] == "uncertain"
+    assert state.attributes["controller_time"] == "2026-11-01T03:04:05"
+    assert {"name", "user_address", "employee_id"}.isdisjoint(state.attributes)
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    assert (await request(admin, "events"))["error"]["code"] == "not_found"

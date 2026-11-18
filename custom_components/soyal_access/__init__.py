@@ -8,10 +8,12 @@ async def async_setup_entry(hass, entry):
     from homeassistant.helpers import device_registry as dr
 
     from .gateway import GatewayManager
+    from .websocket import async_register
 
     manager = GatewayManager(hass, entry)
     await manager.load()
     entry.runtime_data = manager
+    async_register(hass)
     registry = dr.async_get(hass)
     registry.async_get_or_create(
         config_entry_id=entry.entry_id, **manager.device_info()

@@ -8,6 +8,14 @@ from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 
+from .history import (
+    _SCHEMA_V2,
+    delete_person,
+    events_page,
+    people_page,
+    save_person,
+    station_summary,
+)
 from .protocol import ProtocolError, decode
 
 _SCHEMA = (
@@ -70,10 +78,13 @@ class EventStore:
             ).fetchone():
                 for sql in _SCHEMA:
                     db.execute(sql)
-            if (
-                db.execute("SELECT max(version) FROM schema_migrations").fetchone()[0]
-                != 1
-            ):
+            version = db.execute(
+                "SELECT max(version) FROM schema_migrations"
+            ).fetchone()[0]
+            if version == 1:
+                for sql in _SCHEMA_V2:
+                    db.execute(sql)
+            elif version != 2:
                 raise ValueError("Unsupported SOYAL event database version")
             # An old snapshot or a restart cannot prove what the controller did.
             db.execute("""UPDATE sync_state SET phase='uncertain',error='interrupted'
@@ -193,6 +204,29 @@ class EventStore:
 
         await self._run(self._transaction, stop)
 
+    async def history_page(self, filters, cursor, limit):
+        return await self._run(events_page, self._db, filters, cursor, limit)
+
+    async def people_page(self, filters, cursor, limit):
+        return await self._run(people_page, self._db, filters, cursor, limit)
+
+    async def save_person(self, action, station, user_address, name, employee_id):
+        return await self._run(
+            self._transaction,
+            save_person,
+            action,
+            station,
+            user_address,
+            name,
+            employee_id,
+        )
+
+    async def delete_person(self, station, user_address):
+        await self._run(self._transaction, delete_person, station, user_address)
+
+    async def station_summary(self, station):
+        return await self._run(station_summary, self._db, station)
+
     async def backup(self, destination):
         def copy():
             destination.touch(mode=0o600, exist_ok=False)
@@ -226,12 +260,9 @@ async def restore_for_review(snapshot: Path, destination: Path):
         ) as source:
             if source.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                 raise ValueError("Invalid SQLite snapshot")
-            if (
-                source.execute("SELECT max(version) FROM schema_migrations").fetchone()[
-                    0
-                ]
-                != 1
-            ):
+            if source.execute("SELECT max(version) FROM schema_migrations").fetchone()[
+                0
+            ] not in (1, 2):
                 raise ValueError("Unsupported snapshot")
             # Exclusive creation prevents replacing the running HA database.
             destination.touch(mode=0o600, exist_ok=False)

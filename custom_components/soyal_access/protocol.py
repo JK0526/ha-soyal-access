@@ -97,10 +97,10 @@ class ReplyFormat:
         if frame.node != 0:
             return None
         if frame.code in (ReplyKind.ACK.value, ReplyKind.NACK.value):
-            source = frame.payload[0] if frame.payload else None
+            source = (frame.payload[0] or None) if frame.payload else None
             return Reply(ReplyKind(frame.code), source, frame)
         if frame.code not in self.data_codes:
             return None
         if len(frame.payload) < 1 + self.min_data_size:
             raise ProtocolError("SOYAL data reply is missing required bytes")
-        return Reply(ReplyKind.DATA, frame.payload[0], frame)
+        return Reply(ReplyKind.DATA, frame.payload[0] or None, frame)

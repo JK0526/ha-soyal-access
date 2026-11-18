@@ -2,9 +2,17 @@ import asyncio
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
-from custom_components.soyal_access.client import BusClient, BusClosedError
+from custom_components.soyal_access.client import (
+    BusClient,
+    BusClosedError,
+    StationReplyUncertainError,
+)
 from custom_components.soyal_access.protocol import (
-    Frame, ProtocolError, ReplyFormat, ReplyKind, encode,
+    Frame,
+    ProtocolError,
+    ReplyFormat,
+    ReplyKind,
+    encode,
 )
 from tests.simulator import SimulatedGateway
 
@@ -34,7 +42,9 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
         noise = ack(1) + encode(Frame(0, 4)) + encode(Frame(2, 4, b"\x02"))
         self.gateway.responses.put_nowait((noise + raw[:1], raw[1:9], raw[9:]))
         reply = await self.bus.transact(STATION_2, EVENT_REPLY)
-        self.assertEqual((reply.kind, reply.source, reply.frame), (ReplyKind.DATA, 2, event))
+        self.assertEqual(
+            (reply.kind, reply.source, reply.frame), (ReplyKind.DATA, 2, event)
+        )
         self.assertEqual(await self.next_request(), STATION_2)
 
     async def test_shared_bus_serializes_stations(self):
@@ -52,25 +62,60 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
     async def test_timeout_reconnect_without_replay(self):
         # A stalled script holds the connection open until the client closes.
         self.gateway.responses.put_nowait(None)
-        with self.assertRaises(TimeoutError):
-            await self.bus.transact(STATION_1, EVENT_REPLY)
+        first = asyncio.create_task(self.bus.transact(STATION_1, EVENT_REPLY))
         self.assertEqual(await self.next_request(), STATION_1)
-        self.gateway.responses.put_nowait((ack(2),))
+        same_station = asyncio.create_task(self.bus.transact(STATION_1, EVENT_REPLY))
+        with self.assertRaises(TimeoutError):
+            await first
+        with self.assertRaises(StationReplyUncertainError):
+            await same_station
+
+        # Model a transparent gateway forwarding the old serial reply on a new TCP socket.
+        self.gateway.responses.put_nowait((ack(1) + ack(2),))
         self.assertEqual((await self.bus.transact(STATION_2, EVENT_REPLY)).source, 2)
         self.assertEqual(await self.next_request(), STATION_2)
         self.assertTrue(self.gateway.requests.empty())
 
-    async def test_eof_bad_checksum_and_recovery(self):
-        for chunks, error in (
-            ((ack(1)[:3],), ConnectionError),
-            ((ack(1)[:-1] + b"\x00",), ProtocolError),
+    async def test_eof_and_bad_checksum_leave_outcome_uncertain(self):
+        for request, chunks, error in (
+            (STATION_1, (ack(1)[:3],), ConnectionError),
+            (STATION_2, (ack(2)[:-1] + b"\x00",), ProtocolError),
         ):
             self.gateway.responses.put_nowait(chunks)
             with self.assertRaises(error):
-                await self.bus.transact(STATION_1, EVENT_REPLY)
-            self.assertEqual(await self.next_request(), STATION_1)
-        self.gateway.responses.put_nowait((ack(1),))
-        self.assertEqual((await self.bus.transact(STATION_1, EVENT_REPLY)).source, 1)
+                await self.bus.transact(request, EVENT_REPLY)
+            self.assertEqual(await self.next_request(), request)
+            with self.assertRaises(StationReplyUncertainError):
+                await self.bus.transact(request, EVENT_REPLY)
+        self.assertTrue(self.gateway.requests.empty())
+
+    async def test_matching_source_for_every_reply_kind(self):
+        expected_formats = (
+            (Frame(2, 0x21, b"\x00\x00"), 0x03, ReplyKind.DATA),
+            (STATION_2, 0x04, ReplyKind.ACK),
+            (STATION_2, 0x05, ReplyKind.NACK),
+            (Frame(2, 0x18), 0x09, ReplyKind.DATA),
+        )
+        for request, code, kind in expected_formats:
+            with self.subTest(code=code):
+                fmt = ReplyFormat(frozenset({code}))
+                wrong = encode(Frame(0, code, b"\x01"))
+                unknown = encode(Frame(0, code, b"\x00"))
+                matching = Frame(0, code, b"\x02")
+                self.gateway.responses.put_nowait((wrong + unknown + encode(matching),))
+                reply = await self.bus.transact(request, fmt)
+                self.assertEqual(
+                    (reply.kind, reply.source, reply.frame), (kind, 2, matching)
+                )
+                self.assertEqual(await self.next_request(), request)
+
+    async def test_only_wrong_or_unknown_ack_and_nack_fail(self):
+        self.gateway.responses.put_nowait(
+            (ack(2) + ack(2, 5) + encode(Frame(0, 4)) + encode(Frame(0, 5)),)
+        )
+        with self.assertRaises(ConnectionError):
+            await self.bus.transact(STATION_1, EVENT_REPLY)
+        self.assertEqual(await self.next_request(), STATION_1)
 
     async def test_connection_failure_and_recovery(self):
         connect = AsyncMock(side_effect=ConnectionRefusedError)
@@ -103,6 +148,8 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
             task.cancel()
             with self.assertRaises(asyncio.CancelledError):
                 await task
+        with self.assertRaises(StationReplyUncertainError):
+            await self.bus.transact(STATION_1, EVENT_REPLY)
         self.gateway.responses.put_nowait((ack(2),))
         self.assertEqual((await self.bus.transact(STATION_2, EVENT_REPLY)).source, 2)
         self.assertEqual(await self.next_request(), STATION_2)
@@ -122,9 +169,13 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_policy_rejects_requests_before_connect(self):
         for request in (
-            Frame(3, 0x25), Frame(1, 0x37), Frame(2, 0x2D),
-            Frame(1, 0x21, b"\x84"), Frame(1, 0x21, b"\x82"),
-            Frame(2, 0x21, b"\x83"), Frame(1, 0x18, b"\x00"),
+            Frame(3, 0x25),
+            Frame(1, 0x37),
+            Frame(2, 0x2D),
+            Frame(1, 0x21, b"\x84"),
+            Frame(1, 0x21, b"\x82"),
+            Frame(2, 0x21, b"\x83"),
+            Frame(1, 0x18, b"\x00"),
         ):
             with self.subTest(request=request), self.assertRaises(ValueError):
                 await self.bus.transact(request, EVENT_REPLY)
@@ -138,6 +189,8 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
             ("127.0.0.1", 0, {1}, 1),
             ("127.0.0.1", 1, {1}, float("inf")),
         ):
-            with self.subTest(host=host, port=port, stations=stations, timeout=timeout):
-                with self.assertRaises(ValueError):
-                    BusClient(host, port, stations, timeout=timeout)
+            with (
+                self.subTest(host=host, port=port, stations=stations, timeout=timeout),
+                self.assertRaises(ValueError),
+            ):
+                BusClient(host, port, stations, timeout=timeout)

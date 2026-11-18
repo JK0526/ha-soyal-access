@@ -1,7 +1,13 @@
 import unittest
 
 from custom_components.soyal_access.protocol import (
-    Frame, FrameBuffer, ProtocolError, ReplyFormat, ReplyKind, decode, encode,
+    Frame,
+    FrameBuffer,
+    ProtocolError,
+    ReplyFormat,
+    ReplyKind,
+    decode,
+    encode,
 )
 from tests.fixtures import FIELD_REQUESTS, FIELD_STATUS_PREFIXES
 
@@ -36,14 +42,20 @@ class ProtocolTests(unittest.TestCase):
             with self.subTest(split=split):
                 parser = FrameBuffer()
                 self.assertEqual(parser.feed(b"noise" + raw[:split]), [])
-                self.assertEqual(parser.feed(raw[split:] + raw + raw[:1]), [frame, frame])
+                self.assertEqual(
+                    parser.feed(raw[split:] + raw + raw[:1]), [frame, frame]
+                )
                 self.assertEqual(parser.feed(raw[1:]), [frame])
 
     def test_invalid_frames(self):
         raw = encode(Frame(1, 0x25))
-        for malformed in (raw[:-1], b"\x00" + raw[1:], raw + b"\x00",
-                          raw[:-2] + bytes([raw[-2] ^ 1]) + raw[-1:],
-                          raw[:-1] + bytes([raw[-1] ^ 1])):
+        for malformed in (
+            raw[:-1],
+            b"\x00" + raw[1:],
+            raw + b"\x00",
+            raw[:-2] + bytes([raw[-2] ^ 1]) + raw[-1:],
+            raw[:-1] + bytes([raw[-1] ^ 1]),
+        ):
             with self.subTest(malformed=malformed), self.assertRaises(ProtocolError):
                 decode(malformed)
         with self.assertRaises(ProtocolError):

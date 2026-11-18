@@ -1,6 +1,7 @@
 """Serialized asyncio RAW TCP transport for Stage 1 loopback simulation."""
 
 import asyncio
+from typing import Self
 
 from .protocol import Frame, FrameBuffer, Reply, ReplyFormat, encode
 
@@ -10,6 +11,10 @@ _ALLOWED = frozenset({(0x18, b""), (0x21, b"\x00\x00"), (0x25, b"")})
 
 class BusClosedError(RuntimeError):
     """The bus has been shut down permanently."""
+
+
+class StationReplyUncertainError(RuntimeError):
+    """A prior request may still produce a reply from this station."""
 
 
 class BusClient:
@@ -31,8 +36,9 @@ class BusClient:
         self._lock = asyncio.Lock()
         self._active: asyncio.Task[Reply] | None = None
         self._closed = False
+        self._uncertain_stations: set[int] = set()
 
-    async def __aenter__(self) -> "BusClient":
+    async def __aenter__(self) -> Self:
         return self
 
     async def __aexit__(self, *exc: object) -> None:
@@ -48,6 +54,10 @@ class BusClient:
         async with self._lock:
             if self._closed:
                 raise BusClosedError("SOYAL bus is closed")
+            if request.node in self._uncertain_stations:
+                raise StationReplyUncertainError(
+                    f"Station {request.node} may still have a pending reply"
+                )
             self._active = asyncio.create_task(self._exchange(request, reply_format))
             try:
                 return await self._active
@@ -60,7 +70,10 @@ class BusClient:
         try:
             async with asyncio.timeout(self._timeout):
                 reader, writer = await asyncio.open_connection(self._host, self._port)
-                writer.write(encode(request))
+                packet = encode(request)
+                # A write can succeed in part even when drain fails or is cancelled.
+                self._uncertain_stations.add(request.node)
+                writer.write(packet)
                 await writer.drain()
 
                 parser = FrameBuffer()
@@ -68,6 +81,7 @@ class BusClient:
                     for frame in parser.feed(chunk):
                         reply = reply_format.classify(frame)
                         if reply is not None and reply.source == request.node:
+                            self._uncertain_stations.remove(request.node)
                             return reply
                 raise ConnectionError("SOYAL peer closed before a matching reply")
         finally:

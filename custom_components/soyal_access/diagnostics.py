@@ -20,4 +20,9 @@ async def async_get_config_entry_diagnostics(hass, entry):
         stations[node]["events_per_second"] = (
             manager.event_sync.rate.get(node, 0.0) if manager.event_sync else 0.0
         )
-    return {"automatic_sync": False, "stations": stations}
+        stations[node]["control_block_reason"] = manager.control_block_reason(node)
+    return {
+        "automatic_sync": False,
+        "control_enabled": manager.enabled,
+        "stations": stations,
+    }

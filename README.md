@@ -18,6 +18,8 @@
 
 每個 Gateway 對應一個 Config Entry 和共用 Manager。站號 Device 及 Entity 的識別碼由 entry ID、站號與實體類別組成，重新排序或增減站號時，其餘 Device 和 Entity 的識別碼不變。重新設定方式為整合項目選單的「重新設定」。
 
+若脈衝開門與常開實體顯示不可用，可在每站的「最近控制結果」或下載診斷中查看 `control_block_reason`。常見原因為 `disabled_in_settings`（門鎖控制設定停用）、`uncertain`（前次命令結果未確認）、`storage_error`（安全狀態讀寫異常）及 `pending`（指令正在處理）。成功啟用後，常開 Switch 仍以 `Unknown` 表示沒有可信回授。重新設定及重啟會保留安全封鎖。
+
 ## 執行測試
 
 通訊核心測試可獨立執行。HA 測試使用 Python 3.13、Home Assistant 2026.2.3 與 pytest-homeassistant-custom-component 0.13.316。使用兩次 pytest 執行以隔離 HA 測試外掛的事件迴圈與 socket 限制。

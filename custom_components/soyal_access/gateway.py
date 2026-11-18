@@ -44,7 +44,7 @@ class GatewayManager:
         self.signal = f"{DOMAIN}_{self.entry_id}"
         self.nodes = tuple(map(int, entry.data["stations"].split(",")))
         self.status = {node: StationStatus() for node in self.nodes}
-        self.enabled = entry.data["enable_control"]
+        self.enabled = entry.data.get("enable_control") is True
         self.connected = False
         self.waiting = 0
         self.active = False
@@ -136,6 +136,19 @@ class GatewayManager:
     async def _save(self):
         await self._store.async_save({"uncertain": sorted(self.uncertain)})
 
+    def control_block_reason(self, station):
+        """State why the station cannot accept a control command."""
+        if self._closed:
+            return "gateway_closed"
+        if not self.enabled:
+            return "disabled_in_settings"
+        if station in self.uncertain:
+            outcome = self.status[station].outcome
+            if outcome in ("storage_error", "pending"):
+                return outcome
+            return "uncertain"
+        return None
+
     async def control(self, station, action):
         if not self.enabled or self._closed:
             raise HomeAssistantError("Gateway control is disabled")
@@ -147,7 +160,7 @@ class GatewayManager:
             self.waiting -= 1
             self._notify()
         try:
-            if self._closed or station in self.uncertain:
+            if self.control_block_reason(station) is not None:
                 raise HomeAssistantError("Station control is blocked")
             if asyncio.get_running_loop().time() < self._retry_after:
                 raise HomeAssistantError("Gateway reconnect cooldown is active")

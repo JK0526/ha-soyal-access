@@ -5,6 +5,7 @@ import re
 
 import voluptuous as vol
 from homeassistant import config_entries
+from homeassistant.helpers.selector import BooleanSelector
 
 from .const import DEFAULTS, DOMAIN
 
@@ -37,7 +38,9 @@ def schema(defaults):
             vol.Required(
                 "reconnect_delay", default=defaults["reconnect_delay"]
             ): vol.All(vol.Coerce(float), vol.Range(min=0, max=60)),
-            vol.Required("enable_control", default=defaults["enable_control"]): bool,
+            vol.Required(
+                "enable_control", default=defaults.get("enable_control") is True
+            ): vol.All(bool, BooleanSelector()),
         }
     )
 

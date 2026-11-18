@@ -92,6 +92,10 @@ async def test_config_flow_and_reconfigure(hass):
                 await hass.config_entries.flow.async_configure(
                     result["flow_id"], settings(timeout=value)
                 )
+        with pytest.raises(InvalidData):
+            await hass.config_entries.flow.async_configure(
+                result["flow_id"], settings(enable_control="false")
+            )
         invalid = await hass.config_entries.flow.async_configure(
             result["flow_id"], settings(host="https://invalid/", stations="01,1")
         )
@@ -520,3 +524,125 @@ async def test_frontend_config_flow_endpoints(hass, hass_client, tmp_path):
         assert entry.runtime_data is not previous
         assert entry.runtime_data.nodes == (2, 3)
         connect.assert_not_awaited()
+
+
+async def test_control_availability_after_frontend_reconfigure(
+    hass, hass_client, tmp_path
+):
+    from homeassistant.setup import async_setup_component
+
+    hass.config.config_dir = str(tmp_path)
+    assert await async_setup_component(hass, "config", {})
+    assert await async_setup_component(hass, "websocket_api", {})
+    http = await hass_client()
+    base = "/api/config/config_entries/flow"
+
+    async def post(path, data):
+        response = await http.post(path, json=data)
+        assert response.status == 200, await response.text()
+        return await response.json()
+
+    gateway = SimulatedGateway()
+    async with gateway.listen() as port:
+        form = await post(base, {"handler": DOMAIN})
+        control_field = next(
+            field for field in form["data_schema"] if field["name"] == "enable_control"
+        )
+        assert control_field["selector"] == {"boolean": {}}
+        assert control_field["default"] is False
+        submitted = {"host": "127.0.0.1", "port": port}
+        created = await post(f"{base}/{form['flow_id']}", submitted)
+        assert created["type"] == "create_entry"
+        await hass.async_block_till_done()
+        (entry,) = hass.config_entries.async_entries(DOMAIN)
+
+        controls = (
+            ("button", "pulse_open", "press", 0x84),
+            ("switch", "hold_open", "turn_on", 0x82),
+            ("switch", "hold_open", "turn_off", 0x83),
+        )
+        ids = {
+            (node, platform): entity_id(hass, entry, platform, node, key)
+            for node in (1, 2)
+            for platform, key, _, _ in controls
+        }
+
+        def assert_control_state(enabled, blocked=()):
+            assert entry.data["enable_control"] is enabled
+            assert entry.runtime_data.enabled is enabled
+            assert (entry.runtime_data._client is not None) is enabled
+            for (node, platform), control_id in ids.items():
+                state = hass.states.get(control_id)
+                assert state is not None
+                assert (state.state != "unavailable") is (
+                    enabled and node not in blocked
+                )
+                if platform == "switch" and enabled and node not in blocked:
+                    assert state.state == STATE_UNKNOWN
+                assert er.async_get(hass).async_get(control_id).disabled_by is None
+                outcome = hass.states.get(
+                    entity_id(hass, entry, "sensor", node, "outcome")
+                )
+                assert outcome.attributes["control_block_reason"] == (
+                    "disabled_in_settings"
+                    if not enabled
+                    else "uncertain"
+                    if node in blocked
+                    else None
+                )
+
+        async def reconfigure(enabled):
+            old_manager = entry.runtime_data
+            form = await post(base, {"handler": DOMAIN, "entry_id": entry.entry_id})
+            change = await post(
+                f"{base}/{form['flow_id']}", {"enable_control": enabled}
+            )
+            assert change["reason"] == "reconfigure_successful"
+            await hass.async_block_till_done()
+            assert entry.runtime_data is not old_manager
+            assert old_manager.events._db is None
+            assert_control_state(enabled)
+            assert gateway.requests.empty()
+
+        assert_control_state(False)
+        await reconfigure(True)
+        for node in (1, 2):
+            for platform, key, action, code in controls:
+                gateway.responses.put_nowait((io_reply(node),))
+                await service(hass, entry, platform, node, key, action)
+                assert gateway.requests.get_nowait() == Frame(node, 0x21, bytes([code]))
+        await reconfigure(False)
+        await reconfigure(True)
+        gateway.responses.put_nowait((b"",))
+        with pytest.raises(HomeAssistantError, match="uncertain"):
+            await service(hass, entry, "button", 1, "pulse_open", "press")
+        assert gateway.requests.get_nowait() == Frame(1, 0x21, b"\x84")
+        assert_control_state(True, blocked=(1,))
+        assert await hass.config_entries.async_unload(entry.entry_id)
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        assert_control_state(True, blocked=(1,))
+        assert gateway.requests.empty()
+
+
+@pytest.mark.parametrize("saved_value", [None, "false"])
+async def test_unconfirmed_legacy_enable_control_is_fail_closed(hass, saved_value):
+    data = settings()
+    if saved_value is None:
+        del data["enable_control"]
+    else:
+        data["enable_control"] = saved_value
+    entry = MockConfigEntry(domain=DOMAIN, data=data)
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    assert entry.runtime_data._client is None
+    control_id = entity_id(hass, entry, "button", 1, "pulse_open")
+    assert hass.states.get(control_id).state == "unavailable"
+    from custom_components.soyal_access.diagnostics import (
+        async_get_config_entry_diagnostics,
+    )
+
+    diagnostics = await async_get_config_entry_diagnostics(hass, entry)
+    assert diagnostics["control_enabled"] is False
+    assert diagnostics["stations"][1]["control_block_reason"] == "disabled_in_settings"

@@ -94,6 +94,10 @@ class Outcome(DiagnosticSensor):
     ]
 
     @property
+    def extra_state_attributes(self):
+        return {"control_block_reason": self.manager.control_block_reason(self.station)}
+
+    @property
     def native_value(self):
         status = self.manager.status[self.station]
         if status.outcome == "idle" and self.station in self.manager.uncertain:

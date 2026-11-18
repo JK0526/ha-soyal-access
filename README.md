@@ -1,8 +1,10 @@
 # SOYAL Access Control
 
-規格 v1.0 · Stage 4 MVP · Home Assistant domain `soyal_access`
+規格 v1.0 · Stage 5A · Home Assistant domain `soyal_access`
 
 Stage 2 版本為 `0.2.0`。GitHub 的 HACS 預覽版為 `0.1.1`，本階段驗收使用本機工作樹。
+
+[Stage 5A 安裝步驟與雙站驗收表](docs/stage-5a-acceptance.md)
 
 ## Home Assistant 設定與操作
 

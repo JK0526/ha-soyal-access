@@ -341,7 +341,7 @@ async def test_event_storage_lifecycle_and_backup_barrier(hass, tmp_path):
 
     hass.config.config_dir = str(tmp_path)
     with patch("asyncio.open_connection", new_callable=AsyncMock) as connect:
-        entry = await setup_gateway(hass)
+        entry = await setup_gateway(hass, enable_control=True)
         for _ in range(2):
             manager = entry.runtime_data
             assert manager.events.path.parent == tmp_path / "soyal_access"
@@ -357,6 +357,13 @@ async def test_event_storage_lifecycle_and_backup_barrier(hass, tmp_path):
             assert data["stations"][1]["saved"] == 0
             assert await hass.config_entries.async_reload(entry.entry_id)
             assert manager.events._db is None
+        manager = entry.runtime_data
+        assert await hass.config_entries.async_unload(entry.entry_id)
+        assert manager.events._db is None
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        assert entry.runtime_data is not manager
+        assert entry.runtime_data.event_sync is None
         connect.assert_not_called()
 
 

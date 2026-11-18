@@ -14,11 +14,12 @@ from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
 from .backup import backup_lock
-from .client import BusClient, BusClosedError
+from .client import BusClient, BusClosedError, StationReplyUncertainError
 from .const import DOMAIN
 from .event_store import EventStore
 from .event_sync import FifoSync
 from .protocol import Frame, ProtocolError, ReplyFormat, ReplyKind
+from .session import SessionClient
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -64,17 +65,27 @@ class GatewayManager:
             entry.entry_id,
             backup_lock(hass),
         )
-        self._client = None
-        if self.enabled or simulate_fifo:
-            self._client = BusClient(
+        self._monitor_task = None
+        self._client = (
+            BusClient(
                 entry.data["host"],
                 entry.data["port"],
                 set(self.nodes),
                 timeout=entry.data["timeout"],
                 enable_control=self.enabled,
-                simulate_fifo=simulate_fifo,
+                simulate_fifo=True,
                 link_changed=self._link_changed,
             )
+            if simulate_fifo
+            else SessionClient(
+                entry.data["host"],
+                entry.data["port"],
+                set(self.nodes),
+                timeout=entry.data["timeout"],
+                enable_control=self.enabled,
+                link_changed=self._link_changed,
+            )
+        )
 
         self.event_sync = (
             FifoSync(
@@ -86,6 +97,52 @@ class GatewayManager:
             if simulate_fifo
             else None
         )
+
+    def start_monitoring(self):
+        self._monitor_task = asyncio.create_task(self._monitor())
+
+    async def _monitor(self):
+        # Startup delay avoids competing with entry initialization.
+        while True:
+            await asyncio.sleep(15)
+            try:
+                await self._client.connect()
+            except OSError:
+                self.connected = False
+                for status in self.status.values():
+                    status.reachable = False
+                self._notify()
+                continue
+            for node in self.nodes:
+                status = self.status[node]
+                async with self._lock:
+                    if node in self.uncertain:
+                        status.reachable = False
+                        self._notify()
+                        continue
+                    try:
+                        # Persist before polling: an I/O reply could match a later control.
+                        self.uncertain.add(node)
+                        await self._save()
+                        reply = await self._client.transact(
+                            Frame(node, 0x21, b"\x00\x00"), _CONTROL_21_REPLY
+                        )
+                        if reply.kind is not ReplyKind.DATA:
+                            raise ProtocolError("Monitor requires I/O data")
+                        status.reachable = True
+                        status.last_response = dt_util.utcnow()
+                        await self._clear_confirmed(node)
+                    except (
+                        OSError,
+                        HomeAssistantError,
+                        ProtocolError,
+                        StationReplyUncertainError,
+                    ):
+                        status.reachable = False
+                        status.errors += 1
+                        self.errors += 1
+                    finally:
+                        self._notify()
 
     def _storage_evidence_exists(self):
         path = Path(self._store.path)
@@ -233,6 +290,9 @@ class GatewayManager:
 
     async def close(self):
         self._closed = True
+        if self._monitor_task is not None:
+            self._monitor_task.cancel()
+            await asyncio.gather(self._monitor_task, return_exceptions=True)
         if self.event_sync is not None:
             await self.event_sync.close()
         if self._client is not None:

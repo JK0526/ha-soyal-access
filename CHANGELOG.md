@@ -2,6 +2,14 @@
 
 版本來源為 [manifest.json](custom_components/soyal_access/manifest.json)。Git Tag 使用 `v` 前綴。預發佈使用 Semantic Versioning 的 `-beta.N` 或 `-rc.N`，正式版使用不帶預發佈後綴的版本。
 
+## v0.5.0-beta.1
+
+- Gateway 使用共用持續 TCP Session，背景接收與單一在途交易排程，閒置斷線可偵測，監控週期重新連線。
+- 控制停用時仍每站每輪讀取一次 0x21/00 00。每輪之間等待 15 秒，實際輪距含交易耗時。
+- 監控與控制共用來源配對及持久化未決保護。監控回應可能與控制回應同格式，逾時後保留站別封鎖，重連僅恢復 TCP。
+- 常開狀態仍為 Unknown。現有證據僅驗證 Hosting 回應的輸出位元，I/O Relay 定義與門磁仍待實機確認。
+- 長連線經 loopback 驗證，現場 Gateway 相容性待驗收。
+
 ## v0.4.0-beta.2
 
 - 使用 HA 原生布林選擇器設定門鎖控制，提交值須為真正的布林值。整合以儲存的 `true` 啟用控制，缺值或型別不符時維持停用。

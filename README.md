@@ -125,3 +125,10 @@ SQLite schema v2 在原有交易中新增 `people` 表與歷史索引。每筆 C
 - [SOYAL Controller Protocol 4.04](https://files.soyal.com.tw/EN/download/protocol/Protocol_881E_725Ev2_82xEv5%204V04.pdf)
 - [Python asyncio Lock](https://docs.python.org/3/library/asyncio-sync.html#asyncio.Lock)
 - [Home Assistant Config Flow](https://contributors.home-assistant.io/core/integrations/config-flow/)
+
+
+## 持續 TCP 與監控
+
+v0.5.0-beta.1 載入 Gateway 後建立單一 Session 管理器，15 秒後開始逐站唯讀 0x21/00 00 監控。每輪間隔 15 秒，控制停用仍執行監控。背景接收處理 TCP 分段與黏包，RS485 維持一筆在途交易。斷線在下一輪重連，成功的資料回應更新站號通訊時間，失敗更新異常狀態。TCP 連線與站號在線分別呈現。
+
+若監控已送出而結果未知，站號保留持久化 uncertain 並停止該站後續操作。因 I/O 與控制回應沒有交易序號，重連無法證明舊回應已排空。其他站維持獨立排程。Gateway 持續 Session 的現場相容性仍待驗收。Relay、門磁及鎖舌沒有可靠定義時保持未提供。常開 Switch 保留 assumed_state 與 Unknown。

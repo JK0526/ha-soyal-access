@@ -168,7 +168,7 @@ async def test_devices_actions_and_lifecycle(hass, response_kind):
                 ).state
                 == STATE_UNKNOWN
             )
-            assert not entry.runtime_data.connected
+            assert isinstance(entry.runtime_data.connected, bool)
         assert hass.states.get(switch_id).state == STATE_UNKNOWN
         assert hass.states.get(switch_id).attributes["assumed_state"]
         old = entry.runtime_data
@@ -570,7 +570,7 @@ async def test_control_availability_after_frontend_reconfigure(
         def assert_control_state(enabled, blocked=()):
             assert entry.data["enable_control"] is enabled
             assert entry.runtime_data.enabled is enabled
-            assert (entry.runtime_data._client is not None) is enabled
+            assert entry.runtime_data._client is not None
             for (node, platform), control_id in ids.items():
                 state = hass.states.get(control_id)
                 assert state is not None
@@ -636,7 +636,7 @@ async def test_unconfirmed_legacy_enable_control_is_fail_closed(hass, saved_valu
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
-    assert entry.runtime_data._client is None
+    assert entry.runtime_data._client is not None
     control_id = entity_id(hass, entry, "button", 1, "pulse_open")
     assert hass.states.get(control_id).state == "unavailable"
     from custom_components.soyal_access.diagnostics import (
@@ -646,3 +646,94 @@ async def test_unconfirmed_legacy_enable_control_is_fail_closed(hass, saved_valu
     diagnostics = await async_get_config_entry_diagnostics(hass, entry)
     assert diagnostics["control_enabled"] is False
     assert diagnostics["stations"][1]["control_block_reason"] == "disabled_in_settings"
+
+
+async def test_persistent_monitor_without_control(hass):
+    from unittest.mock import patch
+
+    from custom_components.soyal_access.session import SessionClient
+
+    connections = 0
+    requests = asyncio.Queue()
+    writers = []
+
+    async def peer(reader, writer):
+        nonlocal connections
+        connections += 1
+        writers.append(writer)
+        try:
+            while True:
+                header = await reader.readexactly(2)
+                body = await reader.readexactly(header[1])
+                node = body[0]
+                await requests.put((node, body[1:-2]))
+                reply = io_reply(node)
+                writer.write(reply[:3])
+                await writer.drain()
+                writer.write(reply[3:])
+                await writer.drain()
+        except (asyncio.IncompleteReadError, ConnectionResetError):
+            pass
+        finally:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except ConnectionResetError:
+                pass
+
+    server = await asyncio.start_server(peer, "127.0.0.1", 0)
+    async with server:
+        entry = await setup_gateway(hass, port=server.sockets[0].getsockname()[1])
+        manager = entry.runtime_data
+        # Advance the monitor by replacing only its sleep, preserving loopback I/O.
+        original_sleep = asyncio.sleep
+
+        async def fast_sleep(seconds):
+            await original_sleep(0.02 if seconds == 15 else seconds)
+
+        with patch("custom_components.soyal_access.gateway.asyncio.sleep", fast_sleep):
+            manager._monitor_task.cancel()
+            await asyncio.gather(manager._monitor_task, return_exceptions=True)
+            manager.start_monitoring()
+            for _ in range(4):
+                node, command = await asyncio.wait_for(requests.get(), 2)
+                assert node in (1, 2) and command == b"\x21\x00\x00"
+            assert isinstance(manager._client, SessionClient)
+            assert connections == 1
+            assert manager.connected
+            assert all(status.reachable for status in manager.status.values())
+            writers[0].close()
+            await writers[0].wait_closed()
+            for _ in range(2):
+                await asyncio.wait_for(requests.get(), 2)
+            assert connections == 2
+            assert not manager.enabled
+            assert await hass.config_entries.async_unload(entry.entry_id)
+            assert not manager.connected
+
+
+async def test_session_monitor_control_interleaving_and_late_reply(hass):
+    from custom_components.soyal_access.gateway import _CONTROL_21_REPLY
+
+    gateway = SimulatedGateway()
+    async with gateway.listen() as port:
+        entry = await setup_gateway(
+            hass, port=port, enable_control=True, timeout=0.1, reconnect_delay=0
+        )
+        manager = entry.runtime_data
+        client = manager._client
+        gateway.responses.put_nowait((io_reply(1),))
+        reply = await client.transact(Frame(1, 0x21, b"\x00\x00"), _CONTROL_21_REPLY)
+        assert reply.source == 1
+        assert gateway.requests.get_nowait().node == 1
+        gateway.responses.put_nowait(None)
+        with pytest.raises(HomeAssistantError, match="uncertain"):
+            await manager.control(1, 0x84)
+        assert gateway.requests.get_nowait().node == 1
+        gateway.responses.put_nowait((io_reply(1) + io_reply(2),))
+        await manager.control(2, 0x82)
+        assert gateway.requests.get_nowait().node == 2
+        assert manager.uncertain == {1}
+        with pytest.raises(HomeAssistantError, match="blocked"):
+            await manager.control(1, 0x83)
+        assert gateway.requests.empty()

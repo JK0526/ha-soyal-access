@@ -27,6 +27,7 @@ async def async_setup_entry(hass, entry):
     except BaseException:
         await manager.close()
         raise
+    manager.start_monitoring()
     return True
 
 

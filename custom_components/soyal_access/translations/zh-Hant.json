@@ -11,9 +11,7 @@
           "stations": "站號（逗號分隔）",
           "timeout": "交易逾時（秒）",
           "reconnect_delay": "重連冷卻（秒）",
-          "enable_control": "明確啟用門鎖控制",
-          "node02_event_preview": "執行一次 Node 02 唯讀事件預覽",
-          "node02_event_limit": "預覽最多查詢次數（1–5）"
+          "enable_control": "明確啟用門鎖控制"
         }
       },
       "reconfigure": {
@@ -26,9 +24,7 @@
           "stations": "站號（逗號分隔）",
           "timeout": "交易逾時（秒）",
           "reconnect_delay": "重連冷卻（秒）",
-          "enable_control": "明確啟用門鎖控制",
-          "node02_event_preview": "執行一次 Node 02 唯讀事件預覽",
-          "node02_event_limit": "預覽最多查詢次數（1–5）"
+          "enable_control": "明確啟用門鎖控制"
         }
       }
     },

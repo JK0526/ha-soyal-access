@@ -2,6 +2,12 @@
 
 版本來源為 [manifest.json](custom_components/soyal_access/manifest.json)。Git Tag 使用 `v` 前綴。預發佈使用 Semantic Versioning 的 `-beta.N` 或 `-rc.N`，正式版使用不帶預發佈後綴的版本。
 
+## v0.5.1-beta.3
+
+- 暫停正式環境 Node 02 的 0x25 事件預覽。
+- 診斷區分唯讀及控制的未決交易，保留舊版來源不明的封鎖。
+- 管理員可暫停 Gateway，查核持久化狀態與現場排空證據後，解除指定站號的封鎖。現場復原仍待驗收。
+
 ## v0.5.1-beta.2
 
 - Node 02 事件預覽預設停用，需明確啟用一次。每次預設 1 筆、上限 5 次，重載不自動重啟。

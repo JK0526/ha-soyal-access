@@ -11,9 +11,7 @@
           "stations": "Stations (comma-separated)",
           "timeout": "Transaction timeout (seconds)",
           "reconnect_delay": "Reconnect cooldown (seconds)",
-          "enable_control": "Explicitly enable door control",
-          "node02_event_preview": "Run one Node 02 read-only event preview",
-          "node02_event_limit": "Maximum preview queries (1–5)"
+          "enable_control": "Explicitly enable door control"
         }
       },
       "reconfigure": {
@@ -26,9 +24,7 @@
           "stations": "Stations (comma-separated)",
           "timeout": "Transaction timeout (seconds)",
           "reconnect_delay": "Reconnect cooldown (seconds)",
-          "enable_control": "Explicitly enable door control",
-          "node02_event_preview": "Run one Node 02 read-only event preview",
-          "node02_event_limit": "Maximum preview queries (1–5)"
+          "enable_control": "Explicitly enable door control"
         }
       }
     },

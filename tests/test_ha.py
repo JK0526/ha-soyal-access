@@ -396,6 +396,7 @@ async def test_history_websocket_permissions_and_person_lifecycle(
     identity = {"station": 1, "user_address": 28}
     person = identity | {"name": "林小君", "employee_id": "A01"}
     for endpoint, data in (
+        ("recover_station", {"station": 2, "step": "prepare"}),
         ("events", {}),
         ("people", {}),
         ("person/save", {"action": "create", **person}),
@@ -740,7 +741,20 @@ async def test_session_monitor_control_interleaving_and_late_reply(hass):
         assert gateway.requests.empty()
 
 
-async def test_node02_readonly_event_head_deduplication(hass):
+@pytest.fixture
+def enable_simulated_preview(monkeypatch):
+    from functools import partial
+
+    from custom_components.soyal_access import gateway
+
+    monkeypatch.setattr(
+        gateway,
+        "GatewayManager",
+        partial(gateway.GatewayManager, simulate_preview=True),
+    )
+
+
+async def test_node02_readonly_event_head_deduplication(hass, enable_simulated_preview):
     from custom_components.soyal_access.diagnostics import (
         async_get_config_entry_diagnostics,
     )
@@ -790,7 +804,9 @@ async def test_node02_readonly_event_head_deduplication(hass):
         (encode(Frame(0, 0x7F, b"\x02")), "query_failed_ConnectionError"),
     ],
 )
-async def test_preview_reply_classification_and_control(hass, response, result):
+async def test_preview_reply_classification_and_control(
+    hass, response, result, enable_simulated_preview
+):
     gateway = SimulatedGateway()
     async with gateway.listen() as port:
         gateway.responses.put_nowait((response,))
@@ -820,7 +836,9 @@ async def test_preview_reply_classification_and_control(hass, response, result):
         assert gateway.requests.empty()
 
 
-async def test_preview_disabled_by_default_and_one_read_limit(hass):
+async def test_preview_disabled_by_default_and_one_read_limit(
+    hass, enable_simulated_preview
+):
     gateway = SimulatedGateway()
     async with gateway.listen() as port:
         entry = await setup_gateway(hass, port=port, stations="2")
@@ -851,7 +869,9 @@ async def test_preview_disabled_by_default_and_one_read_limit(hass):
         assert gateway.requests.get_nowait() == Frame(2, 0x21, b"\x84")
 
 
-async def test_event_preview_preserves_control_quarantine(hass):
+async def test_event_preview_preserves_control_quarantine(
+    hass, enable_simulated_preview
+):
     gateway = SimulatedGateway()
     async with gateway.listen() as port:
         with patch(
@@ -872,3 +892,51 @@ async def test_event_preview_preserves_control_quarantine(hass):
         with pytest.raises(HomeAssistantError, match="blocked"):
             await entry.runtime_data.control(2, 0x84)
         assert gateway.requests.empty()
+
+
+async def test_stale_preview_flag_is_ignored_in_production(hass):
+    gateway = SimulatedGateway()
+    async with gateway.listen() as port:
+        entry = await setup_gateway(
+            hass, port=port, stations="2", node02_event_preview=True
+        )
+        manager = entry.runtime_data
+        assert not manager.event_preview_enabled
+        assert manager._event_task is None
+        assert (0x25, b"") not in manager._client._allowed
+
+
+async def test_recovery_requires_preparation_and_clears_only_target(
+    hass, hass_ws_client
+):
+    gateway = SimulatedGateway()
+    async with gateway.listen() as port:
+        entry = await setup_gateway(
+            hass, port=port, stations="1,2", enable_control=True
+        )
+        manager = entry.runtime_data
+        manager.uncertain.update({1, 2})
+        await manager._save()
+        with pytest.raises(HomeAssistantError, match="Prepare"):
+            await manager.confirm_recovery(2)
+        assert await manager.prepare_recovery(2) == "legacy_unknown"
+        assert manager._monitor_task.done()
+        assert manager.control_block_reason(1) == "recovery_paused"
+        with pytest.raises(HomeAssistantError, match="Prepare"):
+            await manager.confirm_recovery(1)
+        admin = await hass_ws_client()
+        command = {
+            "type": "soyal_access/recover_station",
+            "entry_id": entry.entry_id,
+            "station": 2,
+            "step": "confirm",
+        }
+        await admin.send_json_auto_id(command)
+        assert not (await admin.receive_json())["success"]
+        await admin.send_json_auto_id(
+            command | {"drain_evidence": "Simulated drain verification record"}
+        )
+        assert (await admin.receive_json())["success"]
+        assert manager.uncertain == {1}
+        assert gateway.requests.empty()
+        assert (await manager._store.async_load())["uncertain"] == [1]

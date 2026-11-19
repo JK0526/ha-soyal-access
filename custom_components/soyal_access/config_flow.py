@@ -39,13 +39,6 @@ def schema(defaults):
                 "reconnect_delay", default=defaults["reconnect_delay"]
             ): vol.All(vol.Coerce(float), vol.Range(min=0, max=60)),
             vol.Required(
-                "node02_event_preview",
-                default=defaults.get("node02_event_preview", False),
-            ): vol.All(bool, BooleanSelector()),
-            vol.Required(
-                "node02_event_limit", default=defaults.get("node02_event_limit", 1)
-            ): vol.All(int, vol.Range(min=1, max=5)),
-            vol.Required(
                 "enable_control", default=defaults.get("enable_control") is True
             ): vol.All(bool, BooleanSelector()),
         }

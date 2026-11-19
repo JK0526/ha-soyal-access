@@ -9,6 +9,4 @@ DEFAULTS = {
     "timeout": 2.0,
     "reconnect_delay": 1.0,
     "enable_control": False,
-    "node02_event_preview": False,
-    "node02_event_limit": 1,
 }

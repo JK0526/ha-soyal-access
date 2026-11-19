@@ -21,7 +21,11 @@ async def async_get_config_entry_diagnostics(hass, entry):
             manager.event_sync.rate.get(node, 0.0) if manager.event_sync else 0.0
         )
         stations[node]["control_block_reason"] = manager.control_block_reason(node)
+        stations[node]["pending_kind"] = (
+            manager.pending_kind.get(node) if node in manager.uncertain else None
+        )
     return {
+        "health_error": manager.health_error,
         "automatic_sync": False,
         "event_preview_attempts": manager.event_preview_attempts,
         "event_preview_limit": manager.event_preview_limit,

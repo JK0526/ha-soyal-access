@@ -133,24 +133,25 @@ v0.5.0-beta.1 載入 Gateway 後建立單一 Session 管理器，15 秒後開始
 
 若監控已送出而結果未知，站號保留持久化 uncertain 並停止該站後續操作。因 I/O 與控制回應沒有交易序號，重連無法證明舊回應已排空。其他站維持獨立排程。Gateway 持續 Session 的現場相容性仍待驗收。Relay、門磁及鎖舌沒有可靠定義時保持未提供。常開 Switch 保留 assumed_state 與 Unknown。
 
+## v0.5.1-beta.3 Node 02 復原
 
-## Node 02 唯讀事件預覽
+正式環境暫停 `0x25` 事件預覽。安裝後重新啟動 HA，既有站號封鎖會保留。若 Node 02 沒有封鎖，可在現場安全條件下驗收既有控制。
 
-事件讀取預設停用。在「重新設定」勾選「執行一次 Node 02 唯讀事件預覽」，設定最多查詢次數（預設 1，上限 5）。儲存後執行一次，設定中的啟用記號隨即消耗，重載與重啟不會重新啟動。要取消正在等候或執行的預覽，在重新設定中保持該選項關閉並儲存，重載會取消舊工作。已送出但無法確認回應時保留安全封鎖。
+既有 HA 診斷的 `health_error` 區分 TCP 建連失敗、唯讀查詢失敗與格式錯誤。若站號仍有可能遲到的回應，`pending_kind` 會標示 `health_read` 或 `control`。beta.2 遺留的紀錄標為 `legacy_unknown`，須同時查核門鎖實況與回應排空。
 
-每筆完成後等待 500 ms，遇到重複佇列頭、ACK、NACK、錯誤或 FIFO 檢查點不一致立即停止。預覽不推進 FIFO。控制已排隊時背景工作讓出，已送出的查詢仍可能讓控制等待該筆查詢完成或逾時。
+### 管理員復原
 
-健康監控維持長連線與 15 秒週期，本輪只向 Node 02 發送背景查詢，Node 01 保留原有手動控制。正常健康回應保留內部時間並只在在線狀態改變時發布。事件來源保持 backfill。
+1. 以 HA 管理員身分透過已驗證的 HA WebSocket 連線發送下列請求，替換 `entry_id`。請求成功後，該 Gateway 的背景工作已停止、控制已暫停且連線已關閉。回應會提供指定站號的持久化未決種類。
 
-下載診斷中的 `node02_event_poll` 可為 `disabled`、`waiting`、`oldest_event_saved`、`duplicate_head`、`empty_ack_unverified`、`nack`、`checkpoint_mismatch`、`uncertain` 或 `query_failed_<錯誤類別>`。ACK 目前只是空佇列候選回應，必須用已知空佇列的現場證據確認。沒有可靠的總事件數查詢。相同頭內容只以目前檢查點去重，不能用來區分兩筆內容完全相同的獨立事件。
+   ```json
+   {"id":1,"type":"soyal_access/recover_station","entry_id":"YOUR_ENTRY_ID","station":2,"step":"prepare"}
+   ```
 
-### Node 02 現場驗收
+2. 維持該 Gateway 暫停，隔離其他會使用同一 RS485 匯流排的客戶端。依該 Gateway 和控制器的廠商程序或獨立匯流排診斷，取得證據確認舊請求已結束，且 Gateway 和串列路徑都無待送舊回應。若可能有未決控制，另在現場核對門鎖。等待、TCP 重連、一次成功讀取或單純看到 TCP 無流量均不足以證明排空。證據不足時維持封鎖。
+3. 持有排空證據後，在相同整合載入期間送出確認，把 `VERIFIED_DRAIN_RECORD_REFERENCE` 換成實際證據的紀錄與查核摘要。HA 驗證管理員權限、準備狀態及持久化站號；硬體證據由現場管理員查核，整合本身無法觀測 Gateway 緩衝區。
 
-1. 更新至此 Beta 並重啟 HA，先保持事件預覽關閉。確認 Node 02 既有控制可操作，Node 01 不執行本輪測試。
-2. 在重新設定啟用一次預覽，次數選 1，儲存後等待結果。此次只讀最舊事件，現場新刷卡可能仍在佇列尾端。
-3. 管理員查閱最新保存事件與診斷，核對站號、事件類型、控制器時間及受控範圍內的人員位址和姓名。再以相同設定預覽一次，應顯示 duplicate_head，SQLite 筆數維持相同。
-4. 若有獨立證據證明佇列為空，再核對 empty_ack_unverified。沒有該證據就保留待驗收狀態。
-5. 回傳 Beta 版本、HA Core 版本、測試起迄時間與時區、預覽次數、node02_event_poll、event_preview_attempts、repeated_queue_heads、交易數及耗時、Node 02 控制封鎖原因、保存筆數及事件類型。將人員位址、姓名、員工編號、主機位址與 entry ID 匿名化，移除原始封包、卡號、PIN 和認證資料。
-6. 若出現 uncertain 或 checkpoint_mismatch，停止追加測試並保留狀態。依既有管理員恢復程序核對遲到回應與佇列，重連不代表已排空。
+   ```json
+   {"id":2,"type":"soyal_access/recover_station","entry_id":"YOUR_ENTRY_ID","station":2,"step":"confirm","drain_evidence":"VERIFIED_DRAIN_RECORD_REFERENCE"}
+   ```
 
-`0x37` 仍在正式 SessionClient allowlist 之外。完整即時事件同步、真實空佇列格式、RS485 負載與同內容獨立事件識別，仍須獨立實機驗收。
+4. 成功後重載該整合，確認其他站號的封鎖仍在，再於現場驗收 Node 02 控制。若需中止，在送出確認前重載即可，未決紀錄會保留。復原不會重送舊命令，也不會清除控制器事件。

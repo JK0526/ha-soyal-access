@@ -10,7 +10,17 @@ from .protocol import FrameBuffer, encode
 class SessionClient(BusClient):
     """Reuse the verified codec and quarantine across TCP reconnections."""
 
-    def __init__(self, host, port, stations, *, timeout, enable_control, link_changed):
+    def __init__(
+        self,
+        host,
+        port,
+        stations,
+        *,
+        timeout,
+        enable_control,
+        link_changed,
+        simulate_preview=False,
+    ):
         # Transport host validation is provided by Config Flow.
         super().__init__(
             host,
@@ -20,7 +30,9 @@ class SessionClient(BusClient):
             enable_control=True,
             link_changed=link_changed,
         )
-        self._allowed = {(0x21, b"\x00\x00"), (0x25, b"")}
+        self._allowed = {(0x21, b"\x00\x00")}
+        if simulate_preview and host in ("127.0.0.1", "::1"):
+            self._allowed.add((0x25, b""))
         if enable_control:
             self._allowed.update((0x21, bytes([code])) for code in (0x82, 0x83, 0x84))
         self._reader_task = None
@@ -86,8 +98,9 @@ class SessionClient(BusClient):
                 await self._connect()
                 future = asyncio.get_running_loop().create_future()
                 self._pending = (request, reply_format, future)
+                packet = encode(request)
                 self._uncertain_stations.add(request.node)
-                self._writer.write(encode(request))
+                self._writer.write(packet)
                 await self._writer.drain()
                 reply = await future
                 self._uncertain_stations.remove(request.node)

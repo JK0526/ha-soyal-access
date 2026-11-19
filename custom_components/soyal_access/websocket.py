@@ -6,6 +6,7 @@ from datetime import date, datetime
 import voluptuous as vol
 from homeassistant.components import websocket_api
 from homeassistant.config_entries import ConfigEntryState
+from homeassistant.exceptions import HomeAssistantError
 
 from .const import DOMAIN
 
@@ -52,7 +53,7 @@ def async_register(hass):
     key = f"{DOMAIN}_websocket_registered"
     if hass.data.get(key):
         return
-    for handler in (events, people, person_save, person_delete):
+    for handler in (events, people, person_save, person_delete, recover_station):
         websocket_api.async_register_command(hass, handler)
     hass.data[key] = True
 
@@ -178,3 +179,45 @@ async def person_delete(hass, connection, msg):
             msg["id"],
             store.delete_person(msg["station"], msg["user_address"]),
         )
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/recover_station",
+        vol.Required("entry_id"): str,
+        vol.Required("station"): _STATION,
+        vol.Required("step"): vol.In(("prepare", "confirm")),
+        vol.Optional("drain_evidence"): vol.All(
+            str, str.strip, vol.Length(min=20, max=500)
+        ),
+    }
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def recover_station(hass, connection, msg):
+    entry = hass.config_entries.async_get_entry(msg["entry_id"])
+    if (
+        entry is None
+        or entry.domain != DOMAIN
+        or entry.state is not ConfigEntryState.LOADED
+    ):
+        connection.send_error(msg["id"], "not_found", "Gateway is unavailable")
+        return
+    manager = entry.runtime_data
+    try:
+        if msg["step"] == "prepare":
+            kind = await manager.prepare_recovery(msg["station"])
+            result = {"paused": True, "pending_kind": kind}
+        else:
+            if "drain_evidence" not in msg:
+                raise HomeAssistantError(
+                    "Verified Gateway and RS485 drain evidence is required"
+                )
+            await manager.confirm_recovery(msg["station"])
+            result = {"paused": True, "reload_required": True}
+    except (OSError, HomeAssistantError):
+        connection.send_error(
+            msg["id"], "recovery_failed", "Check recovery prerequisites"
+        )
+    else:
+        connection.send_result(msg["id"], result)

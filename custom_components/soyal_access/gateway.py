@@ -40,7 +40,15 @@ class StationStatus:
 class GatewayManager:
     """Own one serialized command stream for the configured endpoint."""
 
-    def __init__(self, hass, entry, *, simulate_fifo=False, allow_remove=False):
+    def __init__(
+        self,
+        hass,
+        entry,
+        *,
+        simulate_fifo=False,
+        allow_remove=False,
+        simulate_preview=False,
+    ):
         self.hass = hass
         self.entry_id = entry.entry_id
         self.signal = f"{DOMAIN}_{self.entry_id}"
@@ -54,6 +62,11 @@ class GatewayManager:
         self.uncertain: set[int] = set()
         self._lock = asyncio.Lock()
         self._closed = False
+        self._recovery_station = None
+        self._recovery_ready = False
+        self._invalid_storage = False
+        self.pending_kind = {}
+        self.health_error = None
         self._retry_after = 0.0
         self._delay = entry.data["reconnect_delay"]
         endpoint = repr((entry.data["host"], entry.data["port"])).encode()
@@ -66,7 +79,13 @@ class GatewayManager:
             entry.entry_id,
             backup_lock(hass),
         )
-        self.event_preview_enabled = entry.data.get("node02_event_preview") is True
+        simulate_preview = simulate_preview and entry.data["host"] in (
+            "127.0.0.1",
+            "::1",
+        )
+        self.event_preview_enabled = (
+            simulate_preview and entry.data.get("node02_event_preview") is True
+        )
         self.event_preview_limit = entry.data.get("node02_event_limit", 1)
         self.event_preview_attempts = 0
         self._event_task = None
@@ -91,6 +110,7 @@ class GatewayManager:
                 timeout=entry.data["timeout"],
                 enable_control=self.enabled,
                 link_changed=self._link_changed,
+                simulate_preview=simulate_preview,
             )
         )
 
@@ -170,6 +190,7 @@ class GatewayManager:
             try:
                 await self._client.connect()
             except OSError:
+                self.health_error = "tcp_connect_failed"
                 self.connected = False
                 for status in self.status.values():
                     status.reachable = False
@@ -183,7 +204,7 @@ class GatewayManager:
                 if self.waiting:
                     continue
                 async with self._lock:
-                    if node in self.uncertain:
+                    if self._recovery_station is not None or node in self.uncertain:
                         status.reachable = False
                         self._notify()
                         continue
@@ -193,6 +214,7 @@ class GatewayManager:
                         )
                         if reply.kind is not ReplyKind.DATA:
                             raise ProtocolError("Monitor requires I/O data")
+                        self.health_error = None
                         status.reachable = True
                         status.last_response = dt_util.utcnow()
                     except (
@@ -200,13 +222,20 @@ class GatewayManager:
                         HomeAssistantError,
                         ProtocolError,
                         StationReplyUncertainError,
-                    ):
+                    ) as err:
                         status.reachable = False
                         status.errors += 1
                         self.errors += 1
-                        if self._client.is_uncertain(node):
-                            self.uncertain.add(node)
-                            await self._save()
+                        self.health_error = (
+                            "malformed_reply"
+                            if isinstance(err, ProtocolError)
+                            and self._client.is_uncertain(node)
+                            else "read_failed"
+                        )
+                        await self._record_read_uncertainty(node)
+                    except asyncio.CancelledError:
+                        await self._record_read_uncertainty(node)
+                        raise
                     finally:
                         if status.reachable != was_reachable:
                             self._notify()
@@ -230,8 +259,15 @@ class GatewayManager:
             and all(type(node) is int and 1 <= node <= 255 for node in nodes)
         ):
             self.uncertain.update(nodes)
+            kinds = saved.get("kind", {})
+            for node in nodes:
+                kind = kinds.get(str(node)) if isinstance(kinds, dict) else None
+                self.pending_kind[node] = (
+                    kind if kind in ("control", "health_read") else "legacy_unknown"
+                )
             return
         _LOGGER.error("SOYAL pending control state is invalid; control is blocked")
+        self._invalid_storage = True
         self.uncertain.update(self.nodes)
         for status in self.status.values():
             status.outcome = "storage_error"
@@ -258,12 +294,72 @@ class GatewayManager:
         self._notify()
 
     async def _save(self):
-        await self._store.async_save({"uncertain": sorted(self.uncertain)})
+        await self._store.async_save(
+            {
+                "uncertain": sorted(self.uncertain),
+                "kind": {
+                    str(node): self.pending_kind.get(node, "legacy_unknown")
+                    for node in self.uncertain
+                },
+            }
+        )
+
+    async def _record_read_uncertainty(self, node):
+        if self._client.is_uncertain(node):
+            self.uncertain.add(node)
+            self.pending_kind[node] = "health_read"
+            await self._save()
+
+    async def prepare_recovery(self, station):
+        if (
+            self._closed
+            or self._invalid_storage
+            or station not in self.nodes
+            or station not in self.uncertain
+            or self._recovery_station is not None
+        ):
+            raise HomeAssistantError("Station is not eligible for recovery")
+        self._recovery_station = station
+        self._notify()
+        for task in (self._monitor_task, self._event_task):
+            if task is not None:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+        async with self._lock:
+            await self._client.close()
+            await self._check_recovery_record(station)
+            self._recovery_ready = True
+            return self.pending_kind.get(station, "legacy_unknown")
+
+    async def _check_recovery_record(self, station):
+        saved = await self._store.async_load()
+        if (
+            not isinstance(saved, dict)
+            or not isinstance(saved.get("uncertain"), list)
+            or set(saved["uncertain"]) != self.uncertain
+            or station not in self.uncertain
+        ):
+            raise HomeAssistantError("Persisted uncertainty could not be verified")
+
+    async def confirm_recovery(self, station):
+        async with self._lock:
+            if (
+                self._closed
+                or not self._recovery_ready
+                or self._recovery_station != station
+            ):
+                raise HomeAssistantError("Prepare recovery for this station first")
+            await self._check_recovery_record(station)
+            await self._clear_confirmed(station)
+            self._recovery_ready = False
+            self._notify()
 
     def control_block_reason(self, station):
         """State why the station cannot accept a control command."""
         if self._closed:
             return "gateway_closed"
+        if self._recovery_station is not None:
+            return "recovery_paused"
         if not self.enabled:
             return "disabled_in_settings"
         if station in self.uncertain:
@@ -299,6 +395,7 @@ class GatewayManager:
     async def _control_locked(self, station, action):
         status = self.status[station]
         status.outcome = "pending"
+        self.pending_kind[station] = "control"
         self.uncertain.add(station)
         self._notify()
         try:

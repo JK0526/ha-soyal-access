@@ -18,8 +18,10 @@ async def async_setup_entry(hass, entry):
         await hub.transport.close()
         raise
 
+    hub.start_polling()
+
     async def stop(_event):
-        await hub.transport.close()
+        await hub.stop()
 
     entry.async_on_unload(hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, stop))
     return True
@@ -29,5 +31,5 @@ async def async_unload_entry(hass, entry):
     """Unload the sensor and release the socket."""
     if not await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
         return False
-    await entry.runtime_data.transport.close()
+    await entry.runtime_data.stop()
     return True

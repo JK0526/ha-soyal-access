@@ -19,6 +19,14 @@ from custom_components.soyal_access.const import DOMAIN
 pytestmark = pytest.mark.usefixtures("enable_custom_integrations", "socket_enabled")
 
 
+@pytest.fixture(autouse=True)
+def manual_operations_only(monkeypatch):
+    """Keep the original packet-by-packet tests focused on manual operations."""
+    from custom_components.soyal_access.hub import Hub
+
+    monkeypatch.setattr(Hub, "start_polling", lambda self: None)
+
+
 @asynccontextmanager
 async def gateway():
     connections = asyncio.Queue()
@@ -429,7 +437,11 @@ async def test_node02_operations(hass, response, expected, domain, key, action, 
         assert await hass.config_entries.async_reload(entry.entry_id)
         await hass.async_block_till_done()
         reloaded_peer = await next_item(peers)
-        assert hass.states.get(hold_switch).state == "unknown"
+        ambiguous = expected not in {"success", "rejected"}
+        assert hass.states.get(hold_switch).state == (
+            "unavailable" if ambiguous else "unknown"
+        )
+        assert entry.runtime_data.hold_open is None
         assert (
             registry.async_get_entity_id(
                 "switch", DOMAIN, f"{entry.entry_id}:2:hold_open"

@@ -30,6 +30,9 @@
     "binary_sensor": {
       "tcp_connected": {
         "name": "TCP 已連線"
+      },
+      "node_online": {
+        "name": "在線"
       }
     },
     "button": {

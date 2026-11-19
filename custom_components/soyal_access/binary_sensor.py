@@ -12,7 +12,10 @@ from .const import DOMAIN
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
-    async_add_entities([GatewayLink(entry.entry_id, entry.runtime_data)])
+    hub = entry.runtime_data
+    async_add_entities(
+        [GatewayLink(entry.entry_id, hub), NodeOnline(entry.entry_id, hub)]
+    )
 
 
 class GatewayLink(BinarySensorEntity):
@@ -40,3 +43,16 @@ class GatewayLink(BinarySensorEntity):
                 self.hass, self._hub.signal, self.async_write_ha_state
             )
         )
+
+
+class NodeOnline(GatewayLink):
+    _attr_translation_key = "node_online"
+
+    def __init__(self, entry_id, hub):
+        super().__init__(entry_id, hub)
+        self._attr_unique_id = f"{entry_id}:2:node_online"
+        self._attr_device_info = hub.node_device
+
+    @property
+    def is_on(self):
+        return self._hub.node_online

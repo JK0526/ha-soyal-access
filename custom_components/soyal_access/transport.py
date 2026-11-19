@@ -29,12 +29,14 @@ class Transport:
         self.connected = False
         self.pending = None
         self.tainted = False
-        self._control_pending = False
+        self._reply_codes = (3,)
+        self.last_io = None
 
     async def start(self):
         async with self._lifecycle:
-            if self._receiver is not None or self.tainted:
+            if self.connected or self.pending is not None:
                 return
+            await self._close_stream()
             try:
                 async with asyncio.timeout(self._timeout):
                     reader, writer = await asyncio.open_connection(
@@ -43,6 +45,7 @@ class Transport:
             except OSError as err:
                 _LOGGER.warning("Gateway TCP connection failed: %s", err)
                 return
+            self.tainted = False
             self._writer = writer
             self._receiver = asyncio.create_task(
                 self._receive(reader, writer), name="soyal_access_tcp_rx"
@@ -59,7 +62,7 @@ class Transport:
                     self.tainted = True
                     break
                 buffer.extend(chunk)
-                lengths = (5, 9) if self._control_pending else (9,)
+                lengths = (9,) if self._reply_codes == (3,) else (5, 9)
                 if buffer[0] != HEADER or (
                     len(buffer) >= 2 and buffer[1] not in lengths
                 ):
@@ -68,15 +71,24 @@ class Transport:
                     continue
                 frame = decode(buffer)
                 codes = {5: (4, 5), 9: (3,)}[buffer[1]]
-                if frame.node != 0 or frame.code not in codes or frame.payload[0] != 2:
+                if (
+                    frame.node != 0
+                    or frame.code not in codes
+                    or frame.code not in self._reply_codes
+                    or frame.payload[0] != 2
+                ):
                     raise ProtocolError("Unexpected I/O response type or source")
+                if frame.code == 3:
+                    self.last_io = bytes(buffer)
                 buffer.clear()
                 pending.set_result((monotonic(), frame.code))
         except (OSError, ProtocolError) as err:
+            self.tainted = True
             if self.pending is not None and not self.pending.done():
                 self.pending.set_exception(err)
         finally:
             if self.pending is not None and not self.pending.done():
+                self.tainted = True
                 error = (
                     ProtocolError("Truncated I/O response")
                     if buffer
@@ -87,14 +99,18 @@ class Transport:
             self._set_disconnected()
 
     async def query_node02(self):
-        elapsed, _ = await self._exchange(_QUERY, control=False)
+        elapsed, _ = await self._exchange(_QUERY, reply_codes=(3,))
         return elapsed
 
+    async def poll_node02(self):
+        _, code = await self._exchange(_QUERY, reply_codes=(3, 5))
+        return code == 3
+
     async def control_node02(self, action):
-        _, code = await self._exchange(_CONTROLS[action], control=True)
+        _, code = await self._exchange(_CONTROLS[action], reply_codes=(3, 4, 5))
         return code
 
-    async def _exchange(self, packet, *, control):
+    async def _exchange(self, packet, *, reply_codes):
         if (
             not self.connected
             or self._writer is None
@@ -104,7 +120,7 @@ class Transport:
         ):
             raise NotSentError("Gateway cannot accept a transaction")
         future = asyncio.get_running_loop().create_future()
-        self._control_pending = control
+        self._reply_codes = reply_codes
         self.pending = future
         started = monotonic()
         try:
@@ -112,9 +128,12 @@ class Transport:
                 self._writer.write(packet)
                 await self._writer.drain()
                 received, code = await future
+                if self.tainted:
+                    raise ProtocolError("Unexpected data after the response")
                 return received - started, code
         except (TimeoutError, OSError, ProtocolError, asyncio.CancelledError):
             self.tainted = True
+            self._link_changed()
             await self.close()
             raise
         finally:
@@ -141,11 +160,18 @@ class Transport:
 
     async def close(self):
         async with self._lifecycle:
-            if self._receiver is not None:
-                self._writer.close()
-                self._receiver.cancel()
-                await asyncio.gather(self._receiver, return_exceptions=True)
-                self._receiver = None
-                await self._wait_closed(self._writer)
-                self._writer = None
-                self._set_disconnected()
+            await self._close_stream()
+
+    async def _close_stream(self):
+        if self._writer is None:
+            return
+        self._writer.close()
+        self._receiver.cancel()
+        await asyncio.gather(self._receiver, return_exceptions=True)
+        if self.pending is not None and not self.pending.done():
+            self.tainted = True
+            self.pending.set_exception(ConnectionError("Gateway disconnected"))
+        await self._wait_closed(self._writer)
+        self._receiver = None
+        self._writer = None
+        self._set_disconnected()

@@ -30,6 +30,9 @@
     "binary_sensor": {
       "tcp_connected": {
         "name": "TCP connected"
+      },
+      "node_online": {
+        "name": "Online"
       }
     },
     "button": {

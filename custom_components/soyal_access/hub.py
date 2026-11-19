@@ -15,6 +15,9 @@ from .protocol import ProtocolError
 from .transport import NotSentError, Transport
 
 _LOGGER = logging.getLogger(__name__)
+POLL_INTERVAL = 0.2
+RECONNECT_DELAYS = (1, 2, 4, 8, 15, 30)
+_CONTROL_BLOCKS = f"{DOMAIN}_control_blocks"
 
 
 class Hub:
@@ -33,6 +36,12 @@ class Hub:
         )
         self._hass = hass
         self.busy = False
+        self._transaction = asyncio.Lock()
+        self.poll_task = None
+        self.stopping = False
+        self.node_online = False
+        self._poll_failures = 0
+        self._control_blocks = hass.data.setdefault(_CONTROL_BLOCKS, set())
         self.hold_open = None
         self.result = "not_queried"
         self.last_success = None
@@ -53,11 +62,81 @@ class Hub:
             )
 
     def notify(self):
+        if not self.transport.connected:
+            self.node_online = False
+        if self.transport.tainted and self.entry_id not in self._control_blocks:
+            self._control_blocks.add(self.entry_id)
+            _LOGGER.warning(
+                "SOYAL response could not be attributed. Control is blocked for "
+                "this HA process; automatic reconnect restores read-only access only"
+            )
         async_dispatcher_send(self._hass, self.signal)
+
+    def start_polling(self):
+        self.poll_task = asyncio.create_task(
+            self._poll_loop(), name="soyal_access_poll"
+        )
+
+    async def stop(self):
+        self.stopping = True
+        if self.poll_task is not None:
+            self.poll_task.cancel()
+            await asyncio.gather(self.poll_task, return_exceptions=True)
+            self.poll_task = None
+        await self.transport.close()
+        async with self._transaction:
+            pass
+
+    async def _poll_loop(self):
+        loop = asyncio.get_running_loop()
+        due = loop.time() + POLL_INTERVAL
+        backoff = 0
+        while True:
+            if not self.transport.connected:
+                await asyncio.sleep(RECONNECT_DELAYS[backoff])
+                backoff = min(backoff + 1, len(RECONNECT_DELAYS) - 1)
+                if self.busy or self._transaction.locked():
+                    continue
+                await self.transport.start()
+                due = loop.time() + POLL_INTERVAL
+                if not self.transport.connected:
+                    continue
+
+            await asyncio.sleep(max(0, due - loop.time()))
+            started = loop.time()
+            due = started + POLL_INTERVAL
+            if self.busy or not self.can_query or self._transaction.locked():
+                continue
+            async with self._transaction:
+                try:
+                    valid = await self.transport.poll_node02()
+                except (OSError, ProtocolError):
+                    valid = False
+                if self._record_poll(valid):
+                    backoff = 0
+            if loop.time() >= due:
+                due = loop.time() + POLL_INTERVAL
+
+    def _record_poll(self, valid):
+        was_online = self.node_online
+        if valid and self.transport.connected:
+            self._poll_failures = 0
+            self.node_online = True
+        else:
+            self._poll_failures = min(self._poll_failures + 1, 3)
+            if self._poll_failures == 3 or not self.transport.connected:
+                self.node_online = False
+        if self.node_online != was_online:
+            self.notify()
+        return valid and self.transport.connected
 
     @property
     def can_query(self):
-        return self.transport.connected and not self.transport.tainted
+        return (
+            not self.stopping
+            and self.transport.connected
+            and not self.transport.tainted
+        )
 
     async def query(self):
         if not self.can_query or self.busy:
@@ -66,7 +145,10 @@ class Hub:
             )
         self.busy = True
         try:
-            elapsed = await self.transport.query_node02()
+            async with self._transaction:
+                if not self.can_query:
+                    raise NotSentError
+                elapsed = await self.transport.query_node02()
         except NotSentError as err:
             raise HomeAssistantError("Node 02 query was not sent") from err
         except TimeoutError:
@@ -85,7 +167,7 @@ class Hub:
 
     @property
     def can_pulse(self):
-        return self.transport.connected and not self.transport.tainted
+        return self.can_query and self.entry_id not in self._control_blocks
 
     async def pulse(self):
         await self._control(0x84, "pulse")
@@ -94,13 +176,22 @@ class Hub:
         await self._control(0x82 if enabled else 0x83, "hold open", hold_open=enabled)
 
     async def _control(self, action, label, *, hold_open=None):
+        if self.entry_id in self._control_blocks:
+            raise HomeAssistantError(
+                f"Node 02 {label} was not sent: response attribution is unconfirmed"
+            )
         if not self.can_pulse or self.busy:
             raise HomeAssistantError(
                 f"Node 02 {label} was not sent: Gateway unavailable or busy"
             )
         self.busy = True
+        sent = False
         try:
-            code = await self.transport.control_node02(action)
+            async with self._transaction:
+                if not self.can_pulse:
+                    raise NotSentError
+                sent = True
+                code = await self.transport.control_node02(action)
             if code == 5:
                 raise HomeAssistantError(f"Node 02 rejected the {label} (NACK)")
             if hold_open is not None:
@@ -114,7 +205,7 @@ class Hub:
                 f"Node 02 {label} outcome unconfirmed ({type(err).__name__})"
             ) from err
         except asyncio.CancelledError:
-            if hold_open is not None:
+            if sent and hold_open is not None:
                 self.hold_open = None
             raise
         finally:

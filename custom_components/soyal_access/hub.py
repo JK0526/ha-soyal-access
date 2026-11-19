@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import sqlite3
 from hashlib import sha256
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from homeassistant.util import dt as dt_util
 from .const import DEFAULT_TIMEOUT, DOMAIN
 from .fifo import parse_event
 from .protocol import ProtocolError
+from .storage import FifoStorage
 from .transport import NotSentError, Transport
 
 _LOGGER = logging.getLogger(__name__)
@@ -38,6 +40,8 @@ class Hub:
         self._hass = hass
         self.busy = False
         self.fifo_pending = False
+        self._fifo_waiting = False
+        self.fifo_storage = FifoStorage(hass, entry.entry_id)
         self.fifo_result = "not_queried"
         self.fifo_attributes = {}
         self._transaction = asyncio.Lock()
@@ -90,6 +94,7 @@ class Hub:
         await self.transport.close()
         async with self._transaction:
             pass
+        await self.fifo_storage.close()
 
     async def _poll_loop(self):
         loop = asyncio.get_running_loop()
@@ -111,7 +116,7 @@ class Hub:
             due = started + POLL_INTERVAL
             if (
                 self.busy
-                or self.fifo_pending
+                or self._fifo_waiting
                 or not self._can_exchange
                 or self._transaction.locked()
             ):
@@ -195,6 +200,7 @@ class Hub:
         if not self.can_query or self.fifo_pending:
             raise HomeAssistantError("Node 02 FIFO read was not sent")
         self.fifo_pending = True
+        self._fifo_waiting = True
         attributes = {}
         try:
             while True:
@@ -205,6 +211,7 @@ class Hub:
                         continue
                     if not self.can_query:
                         raise NotSentError
+                    self._fifo_waiting = False
                     frame = await self.transport.read_oldest_event()
                     break
             if frame.code == 4:
@@ -215,6 +222,15 @@ class Hub:
                 result = "event"
                 attributes = parse_event(frame)
                 attributes["read_at"] = dt_util.utcnow().isoformat()
+                try:
+                    attributes.update(await self.fifo_storage.save(attributes))
+                except (OSError, sqlite3.Error) as err:
+                    attributes["storage_status"] = "error"
+                    _LOGGER.warning(
+                        "FIFO observation storage failed (%s)", type(err).__name__
+                    )
+                if frame.code == 0x1C:
+                    attributes.pop("raw_frame_hex")
         except NotSentError as err:
             raise HomeAssistantError("Node 02 FIFO read was not sent") from err
         except TimeoutError:
@@ -224,6 +240,7 @@ class Hub:
         except OSError:
             result = "communication_failed"
         finally:
+            self._fifo_waiting = False
             self.fifo_pending = False
         self.fifo_result = result
         self.fifo_attributes = attributes

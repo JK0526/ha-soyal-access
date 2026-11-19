@@ -60,7 +60,8 @@ def test_parser_rejects_wrong_source_or_shape(frame):
         parse_event(frame)
 
 
-async def test_fifo_entity_priority_and_non_destructive_repeated_read(hass):
+async def test_fifo_entity_priority_and_non_destructive_repeated_read(hass, tmp_path):
+    hass.config.config_dir = str(tmp_path)
     async with gateway(allow_fifo=True) as (port, connections):
         entry = await setup_entry(hass, port, timeout=1)
         hub = entry.runtime_data
@@ -113,6 +114,8 @@ async def test_fifo_entity_priority_and_non_destructive_repeated_read(hass):
         assert hass.states.get(result).state == "event"
         assert hass.states.get(result).attributes["user_address"] == 0x1234
         assert hass.states.get(result).attributes["read_at"]
+        assert hass.states.get(result).attributes["storage_status"] == "saved"
+        record_id = hass.states.get(result).attributes["database_record_id"]
         assert hub.unlock_output is False and hub.hold_open is True
         assert hub.node_online and hub.result == "not_queried"
 
@@ -130,6 +133,12 @@ async def test_fifo_entity_priority_and_non_destructive_repeated_read(hass):
                 state = hass.states.get(result)
                 assert state.state == expected
                 assert ("raw_frame_hex" in state.attributes) == (expected == "event")
+                if expected == "event":
+                    assert state.attributes["storage_status"] == "already_saved"
+                    assert state.attributes["database_record_id"] == record_id
+                    assert state.attributes["read_count"] == 2
+                else:
+                    assert "storage_status" not in state.attributes
                 assert (
                     hub.node_online
                     and hub.hold_open is True
@@ -144,6 +153,14 @@ async def test_fifo_entity_priority_and_non_destructive_repeated_read(hass):
         assert await hass.config_entries.async_reload(entry.entry_id)
         await hass.async_block_till_done()
         assert hass.states.get(result).state == "not_queried"
+        writer, requests, _ = await next_item(connections)
+        await validate(entry.runtime_data, writer, requests)
+        task = asyncio.create_task(press())
+        assert (await next_item(requests))[1] == FIFO
+        await send(writer, raw)
+        await task
+        assert hass.states.get(result).attributes["database_record_id"] == record_id
+        assert hass.states.get(result).attributes["read_count"] == 3
         assert await hass.config_entries.async_unload(entry.entry_id)
 
 
@@ -160,8 +177,9 @@ async def test_fifo_entity_priority_and_non_destructive_repeated_read(hass):
     ],
 )
 async def test_fifo_failure_recovers_without_replaying(
-    hass, monkeypatch, reply, expected
+    hass, monkeypatch, tmp_path, reply, expected
 ):
+    hass.config.config_dir = str(tmp_path)
     monkeypatch.setattr("custom_components.soyal_access.hub.RECONNECT_DELAYS", (0.1,))
     async with gateway(allow_fifo=True) as (port, connections):
         entry = await setup_entry(hass, port, timeout=0.25)
@@ -178,6 +196,7 @@ async def test_fifo_failure_recovers_without_replaying(
         await asyncio.wait_for(closed.wait(), 2)
         assert hub.fifo_result == expected
         assert not hub.fifo_attributes
+        assert not hub.fifo_storage.path.exists()
         assert hub.unlock_output is None and not hub.node_online
         assert requests.empty()
         writer, requests, _ = await next_item(connections)

@@ -71,3 +71,11 @@ SOYAL 回應沒有交易識別碼。新版會拒絕閒置時收到的非預期�
 在測試分支的 Node 02 裝置按一次「讀取 FIFO 最舊事件」。檢查「FIFO 讀取結果」與控制器時間、事件碼、站號、Port 及 User Address。時間採控制器本地 RTC，無效時間顯示為空值。未辨識的事件碼保留數值，未知資料仍留在原始封包中。原始資料可能含敏感資訊，請勿公開轉貼。
 
 本階段接受 Node 02 的 7-byte ACK、NACK 與已知 31-byte 事件框架。ACK 分類為空佇列，仍須以現場資料核對控制器的實際空佇列格式。NACK 代表拒絕。`0x25` 只讀取 FIFO 最舊事件，不會移除紀錄。重複查詢可能讀到同一筆事件，此版本不提供即時刷卡事件串流。此操作不推進 FIFO，因此無法看到還排在後方的記錄。
+
+## Stage 8A FIFO 觀察紀錄
+
+手動 `0x25` 收到有效事件後，整合釋放 TCP 交易鎖，再透過 HA Executor 將事件提交到 `<HA_CONFIG>/soyal_access/<entry_id>.sqlite3`。每個 Config Entry 各用一個檔案。首次有合法事件時才初始化資料庫，並用 `fifo_observation_schema` 管理獨立版本。Reload 或 Restart 後可重新開啟同一份資料庫。
+
+`fifo_observations` 保存原始封包、來源、事件欄位、首次與最後觀察時間及讀取次數。控制器 RTC 仍以本地時間保留。相同 Entry、Node 與原始封包 SHA-256 視為同一筆 FIFO 頭部的重複觀察。這個規則不能用來推斷不同 FIFO 位置的事件是同一筆通行紀錄。
+
+「FIFO 讀取結果」會顯示 `storage_status`。首次提交為 `saved`，重複觀察為 `already_saved`，初始化、寫入或提交失敗為 `error`。儲存失敗仍保留有效的 FIFO 讀取結果，且輪詢與門鎖控制照常執行。PIN 事件的原始封包只留在本機資料庫，不會顯示在感測器欄位或日誌。此階段只觀察 FIFO 最舊事件，沒有移除命令。

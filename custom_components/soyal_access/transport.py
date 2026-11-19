@@ -118,7 +118,7 @@ class Transport:
         return frame
 
     async def pop_oldest_event(self):
-        _, frame = await self._exchange(_POP, expected={5: (4, 5), 10: (4, 5)})
+        _, frame = await self._exchange(_POP, expected={5: (5,), 10: (4, 5)})
         return frame.code
 
     async def _exchange(self, packet, *, expected):

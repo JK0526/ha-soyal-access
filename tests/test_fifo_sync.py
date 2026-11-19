@@ -95,7 +95,7 @@ async def test_sync_disabled_empty_nack_identical_heads_and_legacy_migration(
         second = await expect_saved_pop(hub, writer, requests, same)
         assert first != second
         await toggle(hass, entry, False)  # Already sent: still finish the ACK commit.
-        await send(writer, ACK)
+        await send(writer, FIELD_POP_ACK)
         await eventually(lambda: not hub.fifo_operation.locked())
         assert rows(
             hub.fifo_storage.path,
@@ -169,7 +169,7 @@ async def test_failures_do_not_delete_unsaved_heads(hass, tmp_path, monkeypatch,
         if phase == "ack_commit":
             await read_head(writer, requests, raw)
             assert await next_command(writer, requests) == POP
-            await send(writer, ACK)
+            await send(writer, FIELD_POP_ACK)
             expected = "pop_uncertain"
         elif phase == "changed_head":
             await read_head(writer, requests, synthetic_event(0x10))
@@ -193,7 +193,9 @@ async def test_failures_do_not_delete_unsaved_heads(hass, tmp_path, monkeypatch,
         assert await hass.config_entries.async_unload(entry.entry_id)
 
 
-@pytest.mark.parametrize("loss", ["timeout", "disconnect", "nack", "reload_after_send"])
+@pytest.mark.parametrize(
+    "loss", ["timeout", "disconnect", "nack", "reload_after_send", "late_read_ack"]
+)
 async def test_unconfirmed_removal_is_never_replayed(hass, tmp_path, loss):
     hass.config.config_dir = str(tmp_path)
     async with gateway(allow_fifo=True, allow_pop=True) as (port, connections):
@@ -208,6 +210,8 @@ async def test_unconfirmed_removal_is_never_replayed(hass, tmp_path, loss):
             writer.close()
         elif loss == "nack":
             await send(writer, NACK)
+        elif loss == "late_read_ack":
+            await send(writer, ACK)
         elif loss == "reload_after_send":
             old_task = hub.fifo_sync.task
             assert await hass.config_entries.async_reload(entry.entry_id)
@@ -226,8 +230,14 @@ async def test_unconfirmed_removal_is_never_replayed(hass, tmp_path, loss):
         await read_head(writer, requests, ACK)
         assert (await hub.fifo_storage.progress())[:2] == (event_id, "pop_uncertain")
         assert hub.can_pulse and hub.fifo_sync.enabled
-        # A different valid head records observable advancement, never an ACK.
-        await read_head(writer, requests, synthetic_event(0x10))
+        # A one-off different frame, followed by the old head, cannot resolve it.
+        different = synthetic_event(0x10)
+        await read_head(writer, requests, different)
+        await read_head(writer, requests, raw)
+        assert (await hub.fifo_storage.progress())[:2] == (event_id, "pop_uncertain")
+        await read_head(writer, requests, different)
+        assert (await hub.fifo_storage.progress())[:2] == (event_id, "pop_uncertain")
+        await read_head(writer, requests, different)
         await eventually(
             lambda: (
                 hub.fifo_sync.attributes.get("last_resolution") == "advanced_observed"
@@ -270,7 +280,7 @@ async def test_persisted_progress_is_read_before_first_removal(
         if durable_state == "saved":
             await read_head(writer, requests, raw)
             assert await next_command(writer, requests) == POP
-            await send(writer, ACK)
+            await send(writer, FIELD_POP_ACK)
             await eventually(lambda: hub.fifo_sync.state == "idle")
         else:
             await read_head(writer, requests, raw)
@@ -369,4 +379,25 @@ async def test_endpoint_change_disables_sync_and_preserves_journal(hass, tmp_pat
         assert rows(
             hub.fifo_storage.path, "SELECT consumption_status FROM fifo_access_events"
         ) == [("pop_uncertain",)]
+        assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_empty_after_one_event_does_not_send_another_removal(hass, tmp_path):
+    hass.config.config_dir = str(tmp_path)
+    async with gateway(allow_fifo=True, allow_pop=True) as (port, connections):
+        entry = await setup_entry(hass, port, timeout=0.35)
+        hub = entry.runtime_data
+        writer, requests, _ = await next_item(connections)
+        await validate(hub, writer, requests)
+        await toggle(hass, entry, True)
+        await expect_saved_pop(hub, writer, requests, synthetic_event())
+        await send(writer, FIELD_POP_ACK)
+        # Simulate a controlled test FIFO that contained exactly one event.
+        await read_head(writer, requests, ACK)
+        await read_head(writer, requests, ACK)
+        await toggle(hass, entry, False)
+        await no_commands(writer, requests)
+        assert rows(
+            hub.fifo_storage.path, "SELECT consumption_status FROM fifo_access_events"
+        ) == [("popped_confirmed",)]
         assert await hass.config_entries.async_unload(entry.entry_id)

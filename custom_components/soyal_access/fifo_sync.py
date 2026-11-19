@@ -31,12 +31,14 @@ class FifoSync:
         self._wake = asyncio.Event()
         self.state = "idle" if self.enabled else "disabled"
         self.attributes = {}
+        self._advance_candidate = None
 
     @property
     def enabled(self):
         return self.entry.data.get(ENABLE_KEY) is True
 
     def set_enabled(self, enabled):
+        self._advance_candidate = None
         self.hass.config_entries.async_update_entry(
             self.entry, data={**self.entry.data, ENABLE_KEY: enabled}
         )
@@ -106,6 +108,8 @@ class FifoSync:
             return await self.hub.transport.pop_oldest_event()
 
     async def _cycle(self):
+        previous_candidate = self._advance_candidate
+        self._advance_candidate = None
         pending = None
         try:
             pending = await self.storage.progress()
@@ -133,6 +137,10 @@ class FifoSync:
             raw = bytes.fromhex(event["raw_frame_hex"])
             if pending and pending[1] == "pop_uncertain":
                 if raw != pending[2]:
+                    candidate = (pending[0], session, raw)
+                    if candidate != previous_candidate:
+                        self._advance_candidate = candidate
+                        return IDLE_DELAY
                     await self.storage.transition(
                         pending[0],
                         "pop_uncertain",

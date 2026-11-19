@@ -9,5 +9,5 @@
   "integration_type": "hub",
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/JK0526/ha-soyal-access/issues",
-  "version": "0.7.1-beta.1"
+  "version": "0.7.1-beta.2"
 }

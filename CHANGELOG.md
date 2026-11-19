@@ -2,6 +2,12 @@
 
 版本來源為 [manifest.json](custom_components/soyal_access/manifest.json)。Git Tag 使用 `v` 前綴。預發佈使用 Semantic Versioning 的 `-beta.N` 或 `-rc.N`，正式版使用不帶預發佈後綴的版本。
 
+## v0.7.1-beta.2
+
+- Stage 8B 驗收版。新增 Node 02 FIFO 自動同步，首次安裝預設關閉。
+- 移除 FIFO 頭部前先提交事件與移除意圖至本機 SQLite，再核對控制器目前的頭部。只有符合格式的 ACK 才確認移除。
+- 移除結果未明時不重送。重新觀察到同一個不同頭部兩次後，才記錄 FIFO 已前進的證據。首次實機驗收流程見 README。
+
 ## v0.7.1-beta.1
 
 - 重新發布 Stage 8A，無功能變更。SQLite Schema、通訊、輪詢與門禁控制沿用 beta.10。

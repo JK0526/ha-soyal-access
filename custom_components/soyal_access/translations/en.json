@@ -52,31 +52,5 @@
         }
       }
     }
-  },
-  "services": {
-    "confirm_node02_query": {
-      "name": "Confirm Node 02 query safety",
-      "description": "Enable manual read-only queries for this load after verifying the old replies have drained on site.",
-      "fields": {
-        "entry_id": {
-          "name": "SOYAL entry"
-        },
-        "verified_safe": {
-          "name": "Drain evidence verified"
-        }
-      }
-    },
-    "confirm_node02_pulse": {
-      "name": "Confirm Node 02 pulse safety",
-      "description": "Enable pulse open for this load after verifying the drain and site safety.",
-      "fields": {
-        "entry_id": {
-          "name": "SOYAL entry"
-        },
-        "verified_safe": {
-          "name": "Drain and door safety verified"
-        }
-      }
-    }
   }
 }

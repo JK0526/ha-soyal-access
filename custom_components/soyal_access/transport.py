@@ -57,8 +57,7 @@ class Transport:
                 pending = self.pending
                 if pending is None or pending.done():
                     self.tainted = True
-                    self._link_changed()
-                    continue
+                    break
                 buffer.extend(chunk)
                 lengths = (5, 9) if self._pulse_pending else (9,)
                 if buffer[0] != HEADER or (

@@ -1,14 +1,14 @@
 # SOYAL Access Control
 
-`v0.7.0-beta.3` 是 Stage 3 預發行版。Home Assistant domain 為 `soyal_access`。本版提供 Gateway TCP 狀態、Node 02 手動唯讀 I/O 查詢與脈衝開門。既有 `uncertain` 安全封鎖仍有效。
+`v0.7.0-beta.4` 是 Stage 3 預發行版。Home Assistant domain 為 `soyal_access`。本版提供 Gateway TCP 狀態、Node 02 手動唯讀 I/O 查詢與脈衝開門。TCP 正常時可直接操作。
 
 ## HACS 安裝或更新
 
 1. 若 HACS 尚未有此套件，在自訂儲存庫新增 `https://github.com/JK0526/ha-soyal-access`，類型選 Integration。
-2. 開啟 SOYAL Access Control 的下載或重新下載選單，指定 `v0.7.0-beta.3`，完成後重新啟動 Home Assistant。
+2. 開啟 SOYAL Access Control 的下載或重新下載選單，指定 `v0.7.0-beta.4`，完成後重新啟動 Home Assistant。
 3. 已有 SOYAL Config Entry 會沿用原設定。首次安裝從「設定 → 裝置與服務 → 新增整合」選 SOYAL Access Control，輸入 Host 與 TCP Port。
 
-升級保留舊 Entity Registry、SQLite 及 `.storage` 封鎖紀錄。Node 02 脈衝開門沿用原有實體識別，預設停用。上一版程式與操作文件保存在 [v0.6.0-beta.1](https://github.com/JK0526/ha-soyal-access/tree/v0.6.0-beta.1)。版本來源見 [manifest.json](custom_components/soyal_access/manifest.json)，歷史版本見 [CHANGELOG](CHANGELOG.md)。
+升級保留舊 Entity Registry、SQLite 及 `.storage` 封鎖紀錄。Node 02 脈衝開門沿用 beta.3 的 Entity ID 與 Unique ID。上一版程式與操作文件保存在 [v0.6.0-beta.1](https://github.com/JK0526/ha-soyal-access/tree/v0.6.0-beta.1)。版本來源見 [manifest.json](custom_components/soyal_access/manifest.json)，歷史版本見 [CHANGELOG](CHANGELOG.md)。
 
 ## EP-E300-485 現場驗收
 
@@ -29,21 +29,12 @@
 | `const.py`、`manifest.json`、翻譯與品牌資源 | 整合註冊與 HACS 包裝 |
 | `protocol.py` | SOYAL 原有編解碼 |
 
-## Node 02 實機驗收
+## Node 02 手動操作
 
-1. 更新並重啟 HA，確認 Gateway TCP 顯示已連線。Node 02「手動查詢」在每次載入後預設停用。
-2. 現場管理員先確認舊交易已結束、Gateway 和 RS485 路徑已排空舊回應，並隔離共用匯流排上的其他發送端。請依廠商程序或獨立診斷取得排空證據。只有等待或重新連線時，維持停用。唯讀查詢流程不會讀寫舊版 `uncertain` 紀錄。
-3. 在「開發者工具 → 動作」以登入的管理員執行 `soyal_access.confirm_node02_query`，選擇對應的 SOYAL Config Entry，勾選「已查核排空證據」。確認動作只允許當次載入期間的查詢，本身不送封包。
-4. 在 Node 02 按下「手動查詢」。確認「最近查詢結果」顯示查詢成功，記錄 `last_success` 與 `elapsed_ms`。可在完成後再次手動查詢；前一筆在途時會拒絕重複操作。
-5. 若逾時、收到不完整或不明回應、或交易期間斷線，整合關閉 Session 並停止發送。再次測試前，先確認原因與取得新的現場排空證據，再重載並由管理員確認。TCP 重連不會自動啟用查詢。
+1. 確認 Gateway TCP 顯示已連線。連線正常且沒有進行中的交易時，「手動查詢」與「脈衝開門」可直接操作。
+2. 每次只有一筆交易可在途。重複操作會在發送前被拒絕。查詢與開門共用同一 TCP Session。
+3. 現場操作前，由管理員確認 RS485 匯流排及門禁環境適合測試。舊版 uncertain 紀錄保持不變，新版不以該紀錄作為按鈕授權條件。保留紀錄不代表舊回應已排空，也不代表排空已驗證。
+4. 脈衝開門送一次 Node 02 `0x21 / 84`，收到匹配 I/O 回應或 ACK 表示通訊交易成功。NACK 表示控制器拒絕。請另行人工確認門鎖實際動作。
+5. 若交易已送出但遇到逾時、斷線、取消或無效回應，結果顯示未確認並關閉目前 Session。不會自動重送。HA Reload 可建立新連線，但重連不證明 Gateway 舊回應已排空。查明現場狀況後再操作。
 
-唯讀查詢的發送指令為 Node 02 `0x21 / 00 00`。預期單一完整的 Node 02 I/O 資料回應；同一批收到額外資料會視為不明回應。耗時自送出前至收到完整有效回應，包含 TCP 與 RS485 往返。
-
-## Node 02 脈衝開門現場驗收
-
-1. 先完成上述 TCP 與手動唯讀查詢驗收。確認既有交易已結束、Gateway 與 RS485 路徑已排空，且現場門禁可安全測試。
-2. 以登入的 HA 管理員在「開發者工具 → 動作」執行 `soyal_access.confirm_node02_pulse`，選擇整合並勾選「已確認排空與門禁安全」。唯讀授權不會啟用開門。整合只在開門啟用時唯讀檢查原端點的舊封鎖檔；若 Node 02 仍列為未決或檔案無法驗證，維持停用。管理員確認是現場查核聲明，整合無法自行觀測緩衝區。
-3. 按一次「脈衝開門」。整合送一次 Node 02 `0x21 / 84`。匹配的 11 位元組 I/O 回應或 7 位元組 ACK 代表通訊成功，請另以人工確認電鎖實際動作。匹配的 NACK 會回報拒絕並停用本次載入的開門。
-4. 若結果未決，停止測試。已送出後遇到逾時、斷線、取消或格式錯誤會關閉 TCP 並停用發送。重載或重啟後授權需重新確認，現場仍須提供新的排空證據。控制不會自動重送。
-
-兩個按鈕共用一筆在途交易。交易期間仍顯示原有可用狀態，重複操作會在發送前被拒絕。TCP 或有效回應均不代表實體門鎖位置。
+SOYAL 回應沒有交易識別碼。新版會拒絕閒置時收到的非預期資料，但如果舊回應在新交易送出後才抵達，而且內容與預期回應相同，整合無法辨別兩者。遇到未確認的交易，請先在現場查明舊回應的去向，再繼續測試。

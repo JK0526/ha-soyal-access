@@ -1,7 +1,7 @@
 """Loopback tests for the real Stage 5 worker and HA entities."""
 
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from unittest.mock import patch
 
 import pytest
@@ -20,7 +20,7 @@ NACK = encode(Frame(0, 5, b"\x02"))
 
 
 @asynccontextmanager
-async def gateway():
+async def gateway(*, allow_fifo=False):
     connections = asyncio.Queue()
     tasks = set()
 
@@ -36,13 +36,19 @@ async def gateway():
                 frame = header + length + await reader.readexactly(length[0])
                 decoded = decode(frame)
                 assert decoded.node == 2
-                assert decoded.code == 0x21
-                assert decoded.payload in (b"\x00\x00", b"\x82", b"\x83", b"\x84")
+                if allow_fifo and decoded.code == 0x25:
+                    assert decoded.payload == b""
+                else:
+                    assert decoded.code == 0x21
+                    assert decoded.payload in (b"\x00\x00", b"\x82", b"\x83", b"\x84")
                 requests.put_nowait((asyncio.get_running_loop().time(), frame))
+        except ConnectionResetError:
+            pass
         finally:
             closed.set()
             writer.close()
-            await writer.wait_closed()
+            with suppress(ConnectionResetError):
+                await writer.wait_closed()
             tasks.discard(task)
 
     async with await asyncio.start_server(accept, "127.0.0.1", 0) as server:

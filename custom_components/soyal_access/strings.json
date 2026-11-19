@@ -44,6 +44,9 @@
       },
       "pulse_open": {
         "name": "Pulse open"
+      },
+      "read_fifo_event": {
+        "name": "Read Oldest FIFO Event"
       }
     },
     "sensor": {
@@ -55,6 +58,18 @@
           "timeout": "Timed out",
           "communication_failed": "Communication failed",
           "invalid_response": "Invalid response"
+        }
+      },
+      "fifo_read_result": {
+        "name": "FIFO Read Result",
+        "state": {
+          "not_queried": "Not queried",
+          "empty": "Empty",
+          "event": "Event read",
+          "nack": "Rejected",
+          "timeout": "Timed out",
+          "invalid_response": "Invalid response",
+          "communication_failed": "Communication failed"
         }
       }
     },

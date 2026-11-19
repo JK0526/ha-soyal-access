@@ -1,0 +1,32 @@
+"""Decode the observed Node 02 FIFO event layout."""
+
+from datetime import datetime
+
+from .protocol import Frame, ProtocolError, encode
+
+EVENT_TYPES = {0x0B: "card_access", 0x10: "egress", 0x1C: "pin_access"}
+
+
+def parse_event(frame: Frame) -> dict:
+    """Parse a validated 31-byte event without interpreting its opaque tail."""
+    data = frame.payload
+    if frame.node != 0 or len(data) != 25 or data[0] != 2 or frame.code in (4, 5):
+        raise ProtocolError("Unexpected Node 02 FIFO event format")
+
+    second, minute, hour, _, day, month, year = data[1:8]
+    try:
+        if year > 99:
+            raise ValueError("RTC year outside the supported range")
+        event_time = datetime(2000 + year, month, day, hour, minute, second)
+    except ValueError:
+        event_time = None
+
+    return {
+        "event_code": frame.code,
+        "event_type": EVENT_TYPES.get(frame.code, "unknown_event"),
+        "source_node": data[0],
+        "event_time_local": event_time.isoformat() if event_time else None,
+        "port": data[8],
+        "user_address": int.from_bytes(data[9:11], "big"),
+        "raw_frame_hex": encode(frame).hex(" ").upper(),
+    }

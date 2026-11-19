@@ -6,6 +6,7 @@ from time import monotonic
 
 from .protocol import HEADER, Frame, ProtocolError, decode, encode
 
+_FIFO = encode(Frame(2, 0x25))
 _QUERY = encode(Frame(2, 0x21, b"\x00\x00"))
 _CONTROLS = {code: encode(Frame(2, 0x21, bytes([code]))) for code in (0x82, 0x83, 0x84)}
 
@@ -29,7 +30,7 @@ class Transport:
         self.connected = False
         self.pending = None
         self.tainted = False
-        self._reply_codes = (3,)
+        self._expected = {9: (3,)}
         self.last_io = None
 
     async def start(self):
@@ -62,23 +63,20 @@ class Transport:
                     self.tainted = True
                     break
                 buffer.extend(chunk)
-                lengths = (9,) if self._reply_codes == (3,) else (5, 9)
                 if buffer[0] != HEADER or (
-                    len(buffer) >= 2 and buffer[1] not in lengths
+                    len(buffer) >= 2 and buffer[1] not in self._expected
                 ):
-                    raise ProtocolError("Unexpected I/O response header or length")
+                    raise ProtocolError("Unexpected SOYAL response header or length")
                 if len(buffer) < 2 or len(buffer) < buffer[1] + 2:
                     continue
                 frame = decode(buffer)
-                codes = {5: (4, 5), 9: (3,)}[buffer[1]]
-                if (
-                    frame.node != 0
-                    or frame.code not in codes
-                    or frame.code not in self._reply_codes
-                    or frame.payload[0] != 2
-                ):
-                    raise ProtocolError("Unexpected I/O response type or source")
-                if frame.code == 3:
+                codes = self._expected[buffer[1]]
+                valid_code = (
+                    frame.code not in (4, 5) if codes is None else frame.code in codes
+                )
+                if frame.node != 0 or not valid_code or frame.payload[0] != 2:
+                    raise ProtocolError("Unexpected SOYAL response type or source")
+                if buffer[1] == 9:
                     self.last_io = bytes(buffer)
                 buffer.clear()
                 pending.set_result((monotonic(), frame))
@@ -90,7 +88,7 @@ class Transport:
             if self.pending is not None and not self.pending.done():
                 self.tainted = True
                 error = (
-                    ProtocolError("Truncated I/O response")
+                    ProtocolError("Truncated SOYAL response")
                     if buffer
                     else ConnectionError("Gateway disconnected")
                 )
@@ -99,18 +97,24 @@ class Transport:
             self._set_disconnected()
 
     async def query_node02(self):
-        elapsed, _ = await self._exchange(_QUERY, reply_codes=(3,))
+        elapsed, _ = await self._exchange(_QUERY, expected={9: (3,)})
         return elapsed
 
     async def poll_node02(self):
-        _, frame = await self._exchange(_QUERY, reply_codes=(3, 5))
+        _, frame = await self._exchange(_QUERY, expected={9: (3,), 5: (5,)})
         return frame if frame.code == 3 else None
 
     async def control_node02(self, action):
-        _, frame = await self._exchange(_CONTROLS[action], reply_codes=(3, 4, 5))
+        _, frame = await self._exchange(
+            _CONTROLS[action], expected={9: (3,), 5: (4, 5)}
+        )
         return frame.code
 
-    async def _exchange(self, packet, *, reply_codes):
+    async def read_oldest_event(self):
+        _, frame = await self._exchange(_FIFO, expected={5: (4, 5), 29: None})
+        return frame
+
+    async def _exchange(self, packet, *, expected):
         if (
             not self.connected
             or self._writer is None
@@ -120,7 +124,7 @@ class Transport:
         ):
             raise NotSentError("Gateway cannot accept a transaction")
         future = asyncio.get_running_loop().create_future()
-        self._reply_codes = reply_codes
+        self._expected = expected
         self.pending = future
         started = monotonic()
         try:

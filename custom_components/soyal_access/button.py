@@ -6,7 +6,11 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
 async def async_setup_entry(hass, entry, async_add_entities):
     async_add_entities(
-        [QueryButton(entry.runtime_data), PulseButton(entry.runtime_data)]
+        [
+            QueryButton(entry.runtime_data),
+            PulseButton(entry.runtime_data),
+            FifoButton(entry.runtime_data),
+        ]
     )
 
 
@@ -43,3 +47,10 @@ class PulseButton(QueryButton):
 
     async def async_press(self):
         await self._hub.pulse()
+
+
+class FifoButton(QueryButton):
+    _attr_translation_key = "read_fifo_event"
+
+    async def async_press(self):
+        await self._hub.read_oldest_event()

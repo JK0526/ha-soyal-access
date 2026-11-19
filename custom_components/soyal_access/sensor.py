@@ -5,7 +5,9 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
-    async_add_entities([QueryResult(entry.runtime_data)])
+    async_add_entities(
+        [QueryResult(entry.runtime_data), FifoResult(entry.runtime_data)]
+    )
 
 
 class QueryResult(SensorEntity):
@@ -24,7 +26,7 @@ class QueryResult(SensorEntity):
         ]
         self._hub = hub
         self._attr_device_info = hub.node_device
-        self._attr_unique_id = f"{hub.entry_id}:2:query_result"
+        self._attr_unique_id = f"{hub.entry_id}:2:{self._attr_translation_key}"
 
     @property
     def native_value(self):
@@ -43,3 +45,28 @@ class QueryResult(SensorEntity):
                 self.hass, self._hub.signal, self.async_write_ha_state
             )
         )
+
+
+class FifoResult(QueryResult):
+    _attr_translation_key = "fifo_read_result"
+    _unrecorded_attributes = frozenset({"raw_frame_hex"})
+
+    def __init__(self, hub):
+        super().__init__(hub)
+        self._attr_options = [
+            "not_queried",
+            "empty",
+            "event",
+            "nack",
+            "timeout",
+            "invalid_response",
+            "communication_failed",
+        ]
+
+    @property
+    def native_value(self):
+        return self._hub.fifo_result
+
+    @property
+    def extra_state_attributes(self):
+        return self._hub.fifo_attributes

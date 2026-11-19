@@ -11,6 +11,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.util import dt as dt_util
 
 from .const import DEFAULT_TIMEOUT, DOMAIN
+from .fifo import parse_event
 from .protocol import ProtocolError
 from .transport import NotSentError, Transport
 
@@ -36,6 +37,9 @@ class Hub:
         )
         self._hass = hass
         self.busy = False
+        self.fifo_pending = False
+        self.fifo_result = "not_queried"
+        self.fifo_attributes = {}
         self._transaction = asyncio.Lock()
         self.poll_task = None
         self.stopping = False
@@ -105,7 +109,12 @@ class Hub:
             await asyncio.sleep(max(0, due - loop.time()))
             started = loop.time()
             due = started + POLL_INTERVAL
-            if self.busy or not self._can_exchange or self._transaction.locked():
+            if (
+                self.busy
+                or self.fifo_pending
+                or not self._can_exchange
+                or self._transaction.locked()
+            ):
                 continue
             async with self._transaction:
                 try:
@@ -181,6 +190,44 @@ class Hub:
         finally:
             self.busy = False
             self.notify()
+
+    async def read_oldest_event(self):
+        if not self.can_query or self.fifo_pending:
+            raise HomeAssistantError("Node 02 FIFO read was not sent")
+        self.fifo_pending = True
+        attributes = {}
+        try:
+            while True:
+                async with self._transaction:
+                    # Foreground control reserves busy before waiting for this lock.
+                    # Yield to it even when FIFO was the first waiter after a poll.
+                    if self.busy:
+                        continue
+                    if not self.can_query:
+                        raise NotSentError
+                    frame = await self.transport.read_oldest_event()
+                    break
+            if frame.code == 4:
+                result = "empty"
+            elif frame.code == 5:
+                result = "nack"
+            else:
+                result = "event"
+                attributes = parse_event(frame)
+                attributes["read_at"] = dt_util.utcnow().isoformat()
+        except NotSentError as err:
+            raise HomeAssistantError("Node 02 FIFO read was not sent") from err
+        except TimeoutError:
+            result = "timeout"
+        except ProtocolError:
+            result = "invalid_response"
+        except OSError:
+            result = "communication_failed"
+        finally:
+            self.fifo_pending = False
+        self.fifo_result = result
+        self.fifo_attributes = attributes
+        self.notify()
 
     @property
     def can_pulse(self):

@@ -2,6 +2,12 @@
 
 版本來源為 [manifest.json](custom_components/soyal_access/manifest.json)。Git Tag 使用 `v` 前綴。預發佈使用 Semantic Versioning 的 `-beta.N` 或 `-rc.N`，正式版使用不帶預發佈後綴的版本。
 
+## v0.7.0-beta.2
+
+- 新增 Node 02 手動唯讀 I/O 查詢，預設停用，須由管理員確認現場排空。
+- 顯示查詢結果、最近成功時間及交易耗時；不明回應或逾時後關閉連線並停止發送。
+- 沿用 Gateway TCP 狀態及既有設定。門鎖控制、輪詢與事件功能仍未提供。
+
 ## v0.7.0-beta.1
 
 - Stage 0 + Stage 1 TCP-only 預發行版，包含 HACS、Host／Port 設定與單一 Gateway TCP 狀態感測器。

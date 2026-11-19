@@ -31,6 +31,37 @@
       "tcp_connected": {
         "name": "TCP 已連線"
       }
+    },
+    "button": {
+      "manual_query": {
+        "name": "手動查詢"
+      }
+    },
+    "sensor": {
+      "query_result": {
+        "name": "最近查詢結果",
+        "state": {
+          "not_queried": "尚未查詢",
+          "success": "查詢成功",
+          "timeout": "查詢逾時",
+          "communication_failed": "通訊失敗",
+          "invalid_response": "回應格式錯誤"
+        }
+      }
+    }
+  },
+  "services": {
+    "confirm_node02_query": {
+      "name": "確認 Node 02 查詢安全",
+      "description": "以現場證據確認舊回應已排空後，允許這次載入期間的手動唯讀查詢。",
+      "fields": {
+        "entry_id": {
+          "name": "SOYAL 整合"
+        },
+        "verified_safe": {
+          "name": "已查核排空證據"
+        }
+      }
     }
   }
 }

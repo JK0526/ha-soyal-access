@@ -31,6 +31,37 @@
       "tcp_connected": {
         "name": "TCP connected"
       }
+    },
+    "button": {
+      "manual_query": {
+        "name": "Manual query"
+      }
+    },
+    "sensor": {
+      "query_result": {
+        "name": "Last query result",
+        "state": {
+          "not_queried": "Not queried",
+          "success": "Success",
+          "timeout": "Timed out",
+          "communication_failed": "Communication failed",
+          "invalid_response": "Invalid response"
+        }
+      }
+    }
+  },
+  "services": {
+    "confirm_node02_query": {
+      "name": "Confirm Node 02 query safety",
+      "description": "Enable manual read-only queries for this load after verifying the old replies have drained on site.",
+      "fields": {
+        "entry_id": {
+          "name": "SOYAL entry"
+        },
+        "verified_safe": {
+          "name": "Drain evidence verified"
+        }
+      }
     }
   }
 }

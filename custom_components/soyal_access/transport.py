@@ -1,7 +1,12 @@
-"""One receive-only TCP connection per loaded config entry."""
+"""One TCP connection and one optional read-only transaction per loaded config entry."""
 
 import asyncio
 import logging
+from time import monotonic
+
+from .protocol import HEADER, Frame, ProtocolError, decode, encode
+
+_QUERY = encode(Frame(2, 0x21, b"\x00\x00"))
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -16,6 +21,8 @@ class Transport:
         self._receiver = None
         self._writer = None
         self.connected = False
+        self.pending = None
+        self.tainted = False
 
     async def start(self):
         async with self._lifecycle:
@@ -37,16 +44,59 @@ class Transport:
             self._link_changed()
 
     async def _receive(self, reader, writer):
+        buffer = bytearray()
         try:
-            while await reader.read(4096):
-                # Consume incoming bytes to observe EOF without interpreting frames.
-                pass
-        except OSError as err:
-            _LOGGER.debug("Gateway TCP connection lost: %s", err)
+            while chunk := await reader.read(4096):
+                pending = self.pending
+                if pending is None or pending.done():
+                    self.tainted = True
+                    self._link_changed()
+                    continue
+                buffer.extend(chunk)
+                if buffer[0] != HEADER or (len(buffer) >= 2 and buffer[1] != 9):
+                    raise ProtocolError("Unexpected I/O response header or length")
+                if len(buffer) < 11:
+                    continue
+                frame = decode(buffer)
+                if frame.node != 0 or frame.code != 3 or frame.payload[0] != 2:
+                    raise ProtocolError("Unexpected I/O response type or source")
+                buffer.clear()
+                pending.set_result(monotonic())
+        except (OSError, ProtocolError) as err:
+            if self.pending is not None and not self.pending.done():
+                self.pending.set_exception(err)
         finally:
+            if self.pending is not None and not self.pending.done():
+                error = (
+                    ProtocolError("Truncated I/O response")
+                    if buffer
+                    else ConnectionError("Gateway disconnected")
+                )
+                self.pending.set_exception(error)
             writer.close()
             self._set_disconnected()
-            await self._wait_closed(writer)
+
+    async def query_node02(self):
+        if not self.connected or self.tainted or self.pending is not None:
+            raise ConnectionError("Gateway cannot accept a query")
+        future = asyncio.get_running_loop().create_future()
+        self.pending = future
+        started = monotonic()
+        try:
+            async with asyncio.timeout(self._timeout):
+                self._writer.write(_QUERY)
+                await self._writer.drain()
+                return await future - started
+        except (OSError, ProtocolError, asyncio.CancelledError):
+            self.tainted = True
+            await self.close()
+            raise
+        finally:
+            self.pending = None
+            if not future.done():
+                future.cancel()
+            elif not future.cancelled():
+                future.exception()
 
     def _set_disconnected(self):
         if self.connected:

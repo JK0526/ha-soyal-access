@@ -1,0 +1,11 @@
+confirm_node02_query:
+  fields:
+    entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: soyal_access
+    verified_safe:
+      required: true
+      selector:
+        boolean:

@@ -8,7 +8,9 @@ from hashlib import sha256
 import pytest
 from homeassistant.config_entries import SOURCE_RECONFIGURE, SOURCE_USER
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP, STATE_OFF, STATE_ON
+from homeassistant.core import Context
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -233,3 +235,127 @@ async def test_legacy_entry_registry_and_disk_are_preserved(hass, tmp_path):
         assert await hass.config_entries.async_unload(entry.entry_id)
         assert await next_item(received) == b""
         assert {p: p.read_bytes() for p in original} == original
+
+
+@pytest.mark.parametrize(
+    ("response", "expected"),
+    [
+        ("valid", "success"),
+        ("source", "invalid_response"),
+        ("checksum", "invalid_response"),
+        ("coalesced", "invalid_response"),
+        ("header", "invalid_response"),
+        ("length", "invalid_response"),
+        ("code", "invalid_response"),
+        ("truncated", "invalid_response"),
+        ("timeout", "timeout"),
+        ("disconnect", "communication_failed"),
+    ],
+)
+async def test_node02_query(
+    hass, hass_admin_user, hass_read_only_user, response, expected
+):
+    from custom_components.soyal_access.protocol import Frame, encode
+
+    requests = asyncio.Queue()
+    peers = asyncio.Queue()
+
+    async def peer(reader, writer):
+        try:
+            peers.put_nowait(writer)
+            while payload := await reader.read(4096):
+                requests.put_nowait(payload)
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    async with await asyncio.start_server(peer, "127.0.0.1", 0) as server:
+        port = server.sockets[0].getsockname()[1]
+        entry = await setup_entry(hass, port, timeout=0.3)
+        hub = entry.runtime_data
+        writer = await next_item(peers)
+        registry = er.async_get(hass)
+        button = registry.async_get_entity_id(
+            "button", DOMAIN, f"{entry.entry_id}:2:manual_query"
+        )
+        sensor = registry.async_get_entity_id(
+            "sensor", DOMAIN, f"{entry.entry_id}:2:query_result"
+        )
+        assert hass.states.get(button).state == "unavailable"
+        assert hass.states.get(sensor).state == "not_queried"
+        assert requests.empty()
+        authorization = {"entry_id": entry.entry_id, "verified_safe": True}
+        with pytest.raises(HomeAssistantError):
+            await hass.services.async_call(
+                DOMAIN,
+                "confirm_node02_query",
+                authorization,
+                context=Context(user_id=hass_read_only_user.id),
+                blocking=True,
+            )
+        await hass.services.async_call(
+            DOMAIN,
+            "confirm_node02_query",
+            authorization,
+            context=Context(user_id=hass_admin_user.id),
+            blocking=True,
+        )
+        task = asyncio.create_task(
+            hass.services.async_call(
+                "button", "press", {"entity_id": button}, blocking=True
+            )
+        )
+        assert await next_item(requests) == bytes.fromhex("7E 06 02 21 00 00 DC FF")
+        with pytest.raises(HomeAssistantError):
+            await hub.query()
+        raw = encode(Frame(0, 3, b"\x02\x73\x10\x00\x18"))
+        match response:
+            case "valid":
+                writer.write(raw[:3])
+                await writer.drain()
+                await asyncio.sleep(0.01)
+                writer.write(raw[3:])
+            case "source":
+                writer.write(encode(Frame(0, 3, b"\x01" + raw[5:-2])))
+            case "checksum":
+                writer.write(raw[:-1] + bytes([raw[-1] ^ 1]))
+            case "coalesced":
+                writer.write(raw + raw)
+            case "header":
+                writer.write(b"\x00" + raw[1:])
+            case "length":
+                writer.write(raw[:1] + b"\x08" + raw[2:])
+            case "code":
+                writer.write(encode(Frame(0, 4, raw[4:-2])))
+            case "truncated":
+                writer.write(raw[:5])
+                await writer.drain()
+                writer.close()
+            case "disconnect":
+                writer.close()
+        await task
+        await hass.async_block_till_done()
+        state = hass.states.get(sensor)
+        assert state.state == expected
+        if expected == "success":
+            assert state.attributes["last_success"]
+            assert state.attributes["elapsed_ms"] > 0
+            assert hub.can_query
+            followup = asyncio.create_task(hub.query())
+            assert await next_item(requests) == bytes.fromhex("7E 06 02 21 00 00 DC FF")
+            writer.write(raw)
+            await followup
+            assert hub.result == "success"
+        else:
+            assert not hub.can_query
+            assert hass.states.get(tcp_id(hass, entry)).state == STATE_OFF
+            with pytest.raises(HomeAssistantError):
+                hub.confirm()
+        assert requests.empty()
+        assert peers.empty()
+        assert await hass.config_entries.async_reload(entry.entry_id)
+        await hass.async_block_till_done()
+        await next_item(peers)
+        assert hass.states.get(button).state == "unavailable"
+        assert requests.empty()
+        assert await hass.config_entries.async_unload(entry.entry_id)

@@ -2,6 +2,13 @@
 
 版本來源為 [manifest.json](custom_components/soyal_access/manifest.json)。Git Tag 使用 `v` 前綴。預發佈使用 Semantic Versioning 的 `-beta.N` 或 `-rc.N`，正式版使用不帶預發佈後綴的版本。
 
+## v0.7.0-beta.6
+
+- Stage 5 現場驗收版，從測試分支發布。
+- Node 02 每 200 ms 排定一次唯讀輪詢，新增獨立在線指示。
+- 門鎖控制優先於尚未送出的輪詢。TCP 斷線會退避重連，未決交易保留本次 HA 程序的控制封鎖。
+- 已通過離線模擬測試，現場驗收時請維持單一 RS485 發送端。
+
 ## v0.7.0-beta.5
 
 - 新增 Node 02 常開／解除常開，沿用舊版開關的 Unique ID。

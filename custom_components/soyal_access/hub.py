@@ -17,7 +17,7 @@ from .transport import NotSentError, Transport
 _LOGGER = logging.getLogger(__name__)
 POLL_INTERVAL = 0.2
 RECONNECT_DELAYS = (1, 2, 4, 8, 15, 30)
-_CONTROL_BLOCKS = f"{DOMAIN}_control_blocks"
+RECOVERY_POLLS = 2
 
 
 class Hub:
@@ -41,7 +41,10 @@ class Hub:
         self.stopping = False
         self.node_online = False
         self._poll_failures = 0
-        self._control_blocks = hass.data.setdefault(_CONTROL_BLOCKS, set())
+        self._validation_polls = 0
+        self._quiet_seconds = max(
+            POLL_INTERVAL, entry.data.get("timeout", DEFAULT_TIMEOUT)
+        )
         self.hold_open = None
         self.result = "not_queried"
         self.last_success = None
@@ -62,14 +65,9 @@ class Hub:
             )
 
     def notify(self):
-        if not self.transport.connected:
+        if not self.transport.connected or self.transport.tainted:
             self.node_online = False
-        if self.transport.tainted and self.entry_id not in self._control_blocks:
-            self._control_blocks.add(self.entry_id)
-            _LOGGER.warning(
-                "SOYAL response could not be attributed. Control is blocked for "
-                "this HA process; automatic reconnect restores read-only access only"
-            )
+            self._validation_polls = 0
         async_dispatcher_send(self._hass, self.signal)
 
     def start_polling(self):
@@ -89,7 +87,7 @@ class Hub:
 
     async def _poll_loop(self):
         loop = asyncio.get_running_loop()
-        due = loop.time() + POLL_INTERVAL
+        due = loop.time() + self._quiet_seconds
         backoff = 0
         while True:
             if not self.transport.connected:
@@ -98,14 +96,14 @@ class Hub:
                 if self.busy or self._transaction.locked():
                     continue
                 await self.transport.start()
-                due = loop.time() + POLL_INTERVAL
+                due = loop.time() + self._quiet_seconds
                 if not self.transport.connected:
                     continue
 
             await asyncio.sleep(max(0, due - loop.time()))
             started = loop.time()
             due = started + POLL_INTERVAL
-            if self.busy or not self.can_query or self._transaction.locked():
+            if self.busy or not self._can_exchange or self._transaction.locked():
                 continue
             async with self._transaction:
                 try:
@@ -119,29 +117,37 @@ class Hub:
 
     def _record_poll(self, valid):
         was_online = self.node_online
+        was_ready = self.can_query
         if valid and self.transport.connected:
             self._poll_failures = 0
             self.node_online = True
+            self._validation_polls = min(RECOVERY_POLLS, self._validation_polls + 1)
         else:
+            if not was_ready:
+                self._validation_polls = 0
             self._poll_failures = min(self._poll_failures + 1, 3)
             if self._poll_failures == 3 or not self.transport.connected:
                 self.node_online = False
-        if self.node_online != was_online:
+        if self.node_online != was_online or self.can_query != was_ready:
             self.notify()
-        return valid and self.transport.connected
+        return valid and self.can_query
 
     @property
-    def can_query(self):
+    def _can_exchange(self):
         return (
             not self.stopping
             and self.transport.connected
             and not self.transport.tainted
         )
 
+    @property
+    def can_query(self):
+        return self._can_exchange and self._validation_polls == RECOVERY_POLLS
+
     async def query(self):
         if not self.can_query or self.busy:
             raise HomeAssistantError(
-                "Node 02 query was not sent: Gateway unavailable or busy"
+                "Node 02 query was not sent: Gateway unavailable, validating, or busy"
             )
         self.busy = True
         try:
@@ -167,7 +173,7 @@ class Hub:
 
     @property
     def can_pulse(self):
-        return self.can_query and self.entry_id not in self._control_blocks
+        return self.can_query
 
     async def pulse(self):
         await self._control(0x84, "pulse")
@@ -176,13 +182,9 @@ class Hub:
         await self._control(0x82 if enabled else 0x83, "hold open", hold_open=enabled)
 
     async def _control(self, action, label, *, hold_open=None):
-        if self.entry_id in self._control_blocks:
-            raise HomeAssistantError(
-                f"Node 02 {label} was not sent: response attribution is unconfirmed"
-            )
         if not self.can_pulse or self.busy:
             raise HomeAssistantError(
-                f"Node 02 {label} was not sent: Gateway unavailable or busy"
+                f"Node 02 {label} was not sent: Gateway unavailable, validating, or busy"
             )
         self.busy = True
         sent = False

@@ -72,6 +72,14 @@ async def eventually(predicate):
             await asyncio.sleep(0.01)
 
 
+async def validate(hub, writer, requests):
+    for _ in range(2):
+        assert (await next_item(requests))[1] == POLL
+        assert not hub.can_pulse
+        await send(writer, IO)
+    await eventually(lambda: hub.can_pulse)
+
+
 async def test_poll_spacing_priority_and_cleanup(hass):
     async with gateway() as (port, connections):
         entry = await setup_entry(hass, port, timeout=1)
@@ -87,6 +95,9 @@ async def test_poll_spacing_priority_and_cleanup(hass):
         assert frame == POLL
         assert 0.18 <= second - first < 0.65
 
+        await send(writer, IO)
+        await eventually(lambda: hub.can_pulse)
+        assert (await next_item(requests))[1] == POLL
         # The pulse waits behind the already-transmitted read. No extra polls build up.
         pulse = asyncio.create_task(hub.pulse())
         await asyncio.sleep(0.43)
@@ -132,7 +143,7 @@ async def test_poll_spacing_priority_and_cleanup(hass):
 
 async def test_three_rejected_polls_then_recovers(hass):
     async with gateway() as (port, connections):
-        entry = await setup_entry(hass, port)
+        entry = await setup_entry(hass, port, timeout=0.3)
         writer, requests, _ = await next_item(connections)
         assert (await next_item(requests))[1] == POLL
         await send(writer, IO)
@@ -163,9 +174,7 @@ async def test_reconnect_isolates_control_and_never_replays(hass, monkeypatch, f
         entry = await setup_entry(hass, port, timeout=0.1)
         hub = entry.runtime_data
         writer, requests, closed = await next_item(connections)
-        assert (await next_item(requests))[1] == POLL
-        await send(writer, IO)
-        await eventually(lambda: online_entity(hass, entry) == "on")
+        await validate(hub, writer, requests)
         if failure == "idle_data":
             await send(writer, IO)
         elif failure == "disconnect":
@@ -184,24 +193,28 @@ async def test_reconnect_isolates_control_and_never_replays(hass, monkeypatch, f
         await eventually(lambda: online_entity(hass, entry) == "off")
         assert requests.empty()
         writer, requests, _ = await next_item(connections)
-        assert (await next_item(requests))[1] == POLL
-        await send(writer, IO)
-        await eventually(lambda: online_entity(hass, entry) == "on")
-        if failure == "disconnect":
-            assert hub.can_pulse
-        else:
-            assert not hub.can_pulse
-            with pytest.raises(HomeAssistantError, match="attribution"):
-                await hub.pulse()
+        assert not hub.can_pulse
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(requests.get(), 0.06)
+        with pytest.raises(HomeAssistantError, match="not sent"):
+            await hub.pulse()
+        await validate(hub, writer, requests)
+        assert online_entity(hass, entry) == "on"
+        registry = er.async_get(hass)
+        for domain, key in (("button", "pulse_open"), ("switch", "hold_open")):
+            entity_id = registry.async_get_entity_id(
+                domain, DOMAIN, f"{entry.entry_id}:2:{key}"
+            )
+            assert hass.states.get(entity_id).state != "unavailable"
         assert requests.empty()
 
         old_task = hub.poll_task
         assert await hass.config_entries.async_reload(entry.entry_id)
         await hass.async_block_till_done()
-        _, requests, _ = await next_item(connections)
+        writer, requests, _ = await next_item(connections)
         assert old_task.done()
-        assert entry.runtime_data.can_pulse == (failure == "disconnect")
-        assert (await next_item(requests))[1] == POLL
+        await validate(entry.runtime_data, writer, requests)
+        assert requests.empty()
         assert await hass.config_entries.async_unload(entry.entry_id)
 
 
@@ -213,7 +226,8 @@ async def test_timed_out_poll_rejects_waiting_control_and_backs_off(hass, monkey
     async with gateway() as (port, connections):
         entry = await setup_entry(hass, port, timeout=0.10)
         hub = entry.runtime_data
-        _, requests, closed = await next_item(connections)
+        writer, requests, closed = await next_item(connections)
+        await validate(hub, writer, requests)
         assert (await next_item(requests))[1] == POLL
         pulse = asyncio.create_task(hub.pulse())
         with pytest.raises(HomeAssistantError, match="not sent"):
@@ -231,19 +245,17 @@ async def test_timed_out_poll_rejects_waiting_control_and_backs_off(hass, monkey
         disconnected = loop.time()
         writer, requests, _ = await next_item(connections)
         assert loop.time() - disconnected >= 0.25
-        assert (await next_item(requests))[1] == POLL
-        await send(writer, IO)
-        await eventually(lambda: online_entity(hass, entry) == "on")
-        assert not hub.can_pulse
+        await validate(hub, writer, requests)
         assert not hub.busy
         assert await hass.config_entries.async_unload(entry.entry_id)
 
 
 async def test_unload_cancels_poll_and_rejects_waiting_pulse(hass):
     async with gateway() as (port, connections):
-        entry = await setup_entry(hass, port, timeout=10)
+        entry = await setup_entry(hass, port, timeout=1)
         hub = entry.runtime_data
-        _, requests, closed = await next_item(connections)
+        writer, requests, closed = await next_item(connections)
+        await validate(hub, writer, requests)
         assert (await next_item(requests))[1] == POLL
         pulse = asyncio.create_task(hub.pulse())
         await eventually(lambda: hub.busy)

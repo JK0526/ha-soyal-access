@@ -24,7 +24,11 @@ def manual_operations_only(monkeypatch):
     """Keep the original packet-by-packet tests focused on manual operations."""
     from custom_components.soyal_access.hub import Hub
 
-    monkeypatch.setattr(Hub, "start_polling", lambda self: None)
+    def skip_validation(hub):
+        hub._validation_polls = 2
+        hub.notify()
+
+    monkeypatch.setattr(Hub, "start_polling", skip_validation)
 
 
 @asynccontextmanager
@@ -437,10 +441,7 @@ async def test_node02_operations(hass, response, expected, domain, key, action, 
         assert await hass.config_entries.async_reload(entry.entry_id)
         await hass.async_block_till_done()
         reloaded_peer = await next_item(peers)
-        ambiguous = expected not in {"success", "rejected"}
-        assert hass.states.get(hold_switch).state == (
-            "unavailable" if ambiguous else "unknown"
-        )
+        assert hass.states.get(hold_switch).state == "unknown"
         assert entry.runtime_data.hold_open is None
         assert (
             registry.async_get_entity_id(

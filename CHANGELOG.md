@@ -2,6 +2,13 @@
 
 版本來源為 [manifest.json](custom_components/soyal_access/manifest.json)。Git Tag 使用 `v` 前綴。預發佈使用 Semantic Versioning 的 `-beta.N` 或 `-rc.N`，正式版使用不帶預發佈後綴的版本。
 
+## v0.7.0-beta.7
+
+- 修正通訊異常後 Gateway 與 Node 02 已恢復在線、門鎖控制仍持續不可用的問題。
+- 每條新連線先靜默觀察，再取得兩筆連續有效的唯讀輪詢回應，之後自動恢復手動操作。
+- 復原不會重送脈衝開門、常開或解除常開。有限的觀察窗口無法證明所有舊回應已排空。
+- 已通過離線模擬測試，等待現場驗收。
+
 ## v0.7.0-beta.6
 
 - Stage 5 現場驗收版，從測試分支發布。

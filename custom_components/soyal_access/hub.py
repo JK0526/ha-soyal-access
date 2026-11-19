@@ -40,6 +40,7 @@ class Hub:
         self.poll_task = None
         self.stopping = False
         self.node_online = False
+        self.unlock_output = None
         self._poll_failures = 0
         self._validation_polls = 0
         self._quiet_seconds = max(
@@ -67,6 +68,7 @@ class Hub:
     def notify(self):
         if not self.transport.connected or self.transport.tainted:
             self.node_online = False
+            self.unlock_output = None
             self._validation_polls = 0
         async_dispatcher_send(self._hass, self.signal)
 
@@ -107,20 +109,24 @@ class Hub:
                 continue
             async with self._transaction:
                 try:
-                    valid = await self.transport.poll_node02()
+                    frame = await self.transport.poll_node02()
                 except (OSError, ProtocolError):
-                    valid = False
-                if self._record_poll(valid):
+                    frame = None
+                if self._record_poll(frame):
                     backoff = 0
             if loop.time() >= due:
                 due = loop.time() + POLL_INTERVAL
 
-    def _record_poll(self, valid):
+    def _record_poll(self, frame):
+        valid = frame is not None
+        previous_output = self.unlock_output
         was_online = self.node_online
         was_ready = self.can_query
         if valid and self.transport.connected:
             self._poll_failures = 0
             self.node_online = True
+            # Payload starts at raw offset 4 (source), so I/O offset 6 is index 2.
+            self.unlock_output = bool(frame.payload[2] & 0x40)
             self._validation_polls = min(RECOVERY_POLLS, self._validation_polls + 1)
         else:
             if not was_ready:
@@ -128,7 +134,12 @@ class Hub:
             self._poll_failures = min(self._poll_failures + 1, 3)
             if self._poll_failures == 3 or not self.transport.connected:
                 self.node_online = False
-        if self.node_online != was_online or self.can_query != was_ready:
+                self.unlock_output = None
+        if (
+            self.node_online != was_online
+            or self.can_query != was_ready
+            or self.unlock_output != previous_output
+        ):
             self.notify()
         return valid and self.can_query
 

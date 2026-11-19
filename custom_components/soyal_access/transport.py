@@ -81,7 +81,7 @@ class Transport:
                 if frame.code == 3:
                     self.last_io = bytes(buffer)
                 buffer.clear()
-                pending.set_result((monotonic(), frame.code))
+                pending.set_result((monotonic(), frame))
         except (OSError, ProtocolError) as err:
             self.tainted = True
             if self.pending is not None and not self.pending.done():
@@ -103,12 +103,12 @@ class Transport:
         return elapsed
 
     async def poll_node02(self):
-        _, code = await self._exchange(_QUERY, reply_codes=(3, 5))
-        return code == 3
+        _, frame = await self._exchange(_QUERY, reply_codes=(3, 5))
+        return frame if frame.code == 3 else None
 
     async def control_node02(self, action):
-        _, code = await self._exchange(_CONTROLS[action], reply_codes=(3, 4, 5))
-        return code
+        _, frame = await self._exchange(_CONTROLS[action], reply_codes=(3, 4, 5))
+        return frame.code
 
     async def _exchange(self, packet, *, reply_codes):
         if (
@@ -127,10 +127,10 @@ class Transport:
             async with asyncio.timeout(self._timeout):
                 self._writer.write(packet)
                 await self._writer.drain()
-                received, code = await future
+                received, frame = await future
                 if self.tainted:
                     raise ProtocolError("Unexpected data after the response")
-                return received - started, code
+                return received - started, frame
         except (TimeoutError, OSError, ProtocolError, asyncio.CancelledError):
             self.tainted = True
             self._link_changed()

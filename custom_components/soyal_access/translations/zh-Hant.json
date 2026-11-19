@@ -33,6 +33,9 @@
       },
       "node_online": {
         "name": "在線"
+      },
+      "unlock_output": {
+        "name": "主門解鎖輸出"
       }
     },
     "button": {

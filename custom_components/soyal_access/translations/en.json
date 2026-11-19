@@ -33,6 +33,9 @@
       },
       "node_online": {
         "name": "Online"
+      },
+      "unlock_output": {
+        "name": "Main Door Unlock Output"
       }
     },
     "button": {

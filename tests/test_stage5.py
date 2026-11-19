@@ -2,6 +2,7 @@
 
 import asyncio
 from contextlib import asynccontextmanager
+from unittest.mock import patch
 
 import pytest
 from homeassistant.exceptions import HomeAssistantError
@@ -66,6 +67,12 @@ def online_entity(hass, entry):
     return hass.states.get(entity).state
 
 
+def output_entity(hass, entry):
+    return er.async_get(hass).async_get_entity_id(
+        "binary_sensor", DOMAIN, f"{entry.entry_id}:2:unlock_output"
+    )
+
+
 async def eventually(predicate):
     async with asyncio.timeout(2):
         while not predicate():
@@ -106,8 +113,10 @@ async def test_poll_spacing_priority_and_cleanup(hass):
         await send(writer, IO)
         _, frame = await next_item(requests)
         assert frame == bytes.fromhex("7E 05 02 21 84 58 FF")
-        await send(writer, IO)
+        output = output_entity(hass, entry)
+        await send(writer, bytes.fromhex("7E 09 00 03 02 73 52 00 18 C7 A9"))
         await pulse
+        assert hass.states.get(output).state == "off"
 
         for enabled, expected in (
             (True, "7E 05 02 21 82 5E 03"),
@@ -119,6 +128,7 @@ async def test_poll_spacing_priority_and_cleanup(hass):
             await send(writer, IO)
             await command
             assert hub.hold_open is enabled
+            assert hass.states.get(output).state == "off"
 
         _, frame = await next_item(requests)
         assert frame == POLL
@@ -269,3 +279,91 @@ async def test_unload_cancels_poll_and_rejects_waiting_pulse(hass):
         assert task.done()
         assert hub.transport.pending is None
         assert requests.empty()
+
+
+async def test_unlock_output_tracks_poll_only_and_resets_on_reload(hass):
+    async with gateway() as (port, connections):
+        entry = await setup_entry(hass, port, timeout=0.3)
+        hub = entry.runtime_data
+        writer, requests, _ = await next_item(connections)
+        entity = output_entity(hass, entry)
+        registry = er.async_get(hass)
+        online = registry.async_get_entity_id(
+            "binary_sensor", DOMAIN, f"{entry.entry_id}:2:node_online"
+        )
+        assert (
+            registry.async_get(entity).device_id == registry.async_get(online).device_id
+        )
+        assert hass.states.get(entity).state == "unavailable"
+        await validate(hub, writer, requests)
+        assert hass.states.get(entity).state == "off"
+
+        async def poll(reply):
+            assert (await next_item(requests))[1] == POLL
+            await send(writer, reply)
+            await eventually(lambda: not hub._transaction.locked())
+
+        for raw, expected in (
+            ("7E 09 00 03 02 73 12 00 18 87 29", "off"),
+            ("7E 09 00 03 02 73 52 00 18 C7 A9", "on"),
+            ("7E 09 00 03 02 73 50 00 18 C5 A5", "on"),
+            ("7E 09 00 03 02 73 10 00 18 85 25", "off"),
+        ):
+            await poll(bytes.fromhex(raw))
+            assert hass.states.get(entity).state == expected
+        await poll(encode(Frame(0, 3, b"\x02\x00\xc1\xff\xab")))
+        assert hass.states.get(entity).state == "on"
+        with patch.object(hub, "notify", wraps=hub.notify) as notify:
+            await poll(encode(Frame(0, 3, b"\x02\xff\x41\x00\x00")))
+            notify.assert_not_called()
+        assert hub.hold_open is None
+
+        for expected in ("on", "on", "unavailable"):
+            await poll(NACK)
+            assert hass.states.get(entity).state == expected
+        await poll(IO)
+        assert hass.states.get(entity).state == "off"
+        await poll(bytes.fromhex("7E 09 00 03 02 73 52 00 18 C7 A9"))
+        assert hass.states.get(entity).state == "on"
+
+        assert await hass.config_entries.async_reload(entry.entry_id)
+        await hass.async_block_till_done()
+        writer, requests, _ = await next_item(connections)
+        assert output_entity(hass, entry) == entity
+        assert hass.states.get(entity).state == "unavailable"
+        await validate(entry.runtime_data, writer, requests)
+        assert hass.states.get(entity).state == "off"
+        assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        encode(Frame(0, 3, b"\x01\x73\x52\x00\x18")),
+        bytes.fromhex("7E 09 00 03 02 73 52 00 18 C7 A8"),
+        encode(Frame(0, 3, b"\x02\x73\x52")),
+        encode(Frame(0, 4, b"\x02")),
+    ],
+    ids=["wrong-node", "checksum", "short", "ack"],
+)
+async def test_invalid_poll_cannot_confirm_unlock_output(hass, monkeypatch, invalid):
+    monkeypatch.setattr("custom_components.soyal_access.hub.RECONNECT_DELAYS", (0.1,))
+    async with gateway() as (port, connections):
+        entry = await setup_entry(hass, port, timeout=0.25)
+        writer, requests, closed = await next_item(connections)
+        entity = output_entity(hass, entry)
+        assert hass.states.get(entity).state == "unavailable"
+        await validate(entry.runtime_data, writer, requests)
+        assert hass.states.get(entity).state == "off"
+        assert (await next_item(requests))[1] == POLL
+        await send(writer, invalid)
+        await asyncio.wait_for(closed.wait(), 2)
+        await eventually(lambda: hass.states.get(entity).state == "unavailable")
+        assert entry.runtime_data.unlock_output is None
+
+        writer, requests, _ = await next_item(connections)
+        assert hass.states.get(entity).state == "unavailable"
+        assert (await next_item(requests))[1] == POLL
+        await send(writer, bytes.fromhex("7E 09 00 03 02 73 50 00 18 C5 A5"))
+        await eventually(lambda: hass.states.get(entity).state == "on")
+        assert await hass.config_entries.async_unload(entry.entry_id)

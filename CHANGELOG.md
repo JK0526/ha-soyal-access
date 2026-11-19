@@ -2,6 +2,11 @@
 
 版本來源為 [manifest.json](custom_components/soyal_access/manifest.json)。Git Tag 使用 `v` 前綴。預發佈使用 Semantic Versioning 的 `-beta.N` 或 `-rc.N`，正式版使用不帶預發佈後綴的版本。
 
+## v0.7.1-beta.6
+
+- 修正 HA Reload 後 FIFO 同步狀態感測器可能停在 `unavailable` 的問題。加入 `waiting_for_gateway` ENUM 選項及英文、繁體中文翻譯。
+- 增加 HA Reload 回歸測試，確認初始狀態、後續更新與安全暫停屬性可正常發布。
+
 ## v0.7.1-beta.5
 
 - 保存 FIFO 自動同步的使用者設定。重啟或 Reload 後，需通訊驗證通過、SQLite 安全狀態為 `safe`，且沒有協定暫停或未決移除，才會恢復。

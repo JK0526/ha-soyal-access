@@ -2,6 +2,12 @@
 
 版本來源為 [manifest.json](custom_components/soyal_access/manifest.json)。Git Tag 使用 `v` 前綴。預發佈使用 Semantic Versioning 的 `-beta.N` 或 `-rc.N`，正式版使用不帶預發佈後綴的版本。
 
+## v0.7.0-beta.9
+
+- Stage 7 現場驗收版。新增 Node 02 FIFO 最舊事件手動讀取、事件解析與 FIFO 查詢結果感測器。
+- `0x25` 只讀取最舊事件，不移除 FIFO 紀錄。空 FIFO ACK 格式尚待實機驗證。
+- 此版本不提供即時刷卡事件串流。包含 Stage 5 通訊復原與 Stage 6 主門解鎖輸出。
+
 ## v0.7.0-beta.8
 
 - Stage 6 現場驗收版。新增 Node 02「主門解鎖輸出」，取自既有 200 ms 輪詢 I/O 回應的 Bit 6。

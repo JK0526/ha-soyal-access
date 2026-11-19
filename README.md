@@ -1,11 +1,11 @@
 # SOYAL Access Control
 
-`v0.7.0-beta.8` 是 Stage 6 預發行版。Home Assistant domain 為 `soyal_access`。本版提供 Gateway TCP 狀態、Node 02 手動唯讀 I/O 查詢、脈衝開門與常開控制。本版新增 Node 02 主門解鎖輸出感測器，沿用 Stage 5 的 200 ms 唯讀輪詢。
+`v0.7.0-beta.9` 是 Stage 7 預發行版。Home Assistant domain 為 `soyal_access`。本版提供 Gateway TCP 狀態、Node 02 手動唯讀 I/O 查詢、脈衝開門與常開控制。本版新增 Node 02 FIFO 最舊事件手動讀取、事件解析與查詢結果感測器，並包含 Stage 5 的 200 ms 輪詢和 Stage 6 的主門解鎖輸出。
 
 ## HACS 安裝或更新
 
 1. 若 HACS 尚未有此套件，在自訂儲存庫新增 `https://github.com/JK0526/ha-soyal-access`，類型選 Integration。
-2. 開啟 SOYAL Access Control 的下載或重新下載選單，指定 `v0.7.0-beta.8`，完成後重新啟動 Home Assistant。
+2. 開啟 SOYAL Access Control 的下載或重新下載選單，指定 `v0.7.0-beta.9`，完成後重新啟動 Home Assistant。
 3. 已有 SOYAL Config Entry 會沿用原設定。首次安裝從「設定 → 裝置與服務 → 新增整合」選 SOYAL Access Control，輸入 Host 與 TCP Port。
 
 升級保留舊 Entity Registry、SQLite 及 `.storage` 封鎖紀錄。Node 02 脈衝開門沿用 beta.3 的 Entity ID 與 Unique ID。上一版程式與操作文件保存在 [v0.6.0-beta.1](https://github.com/JK0526/ha-soyal-access/tree/v0.6.0-beta.1)。版本來源見 [manifest.json](custom_components/soyal_access/manifest.json)，歷史版本見 [CHANGELOG](CHANGELOG.md)。
@@ -48,7 +48,7 @@ SOYAL 回應沒有交易識別碼。新版會拒絕閒置時收到的非預期�
 
 ## Stage 5 現場驗收
 
-請透過 HACS 指定安裝 `v0.7.0-beta.8` 預發行版。
+請透過 HACS 指定安裝 `v0.7.0-beta.9` 預發行版。
 
 - Node 02 每 200 ms 排定一次 `0x21 / 00 00` 唯讀輪詢。單調時鐘與單一背景工作控制週期，忙碌或超過週期時不補送。控制與手動查詢共用 Transport。最多一筆前景操作可等待已送出的輪詢結束，等待期間略過新輪詢。重複前景操作直接拒絕。
 - Gateway TCP 與 Node 02 Online 各自呈現。有效輪詢 I/O 回應才可點亮 Node 02 Online。連續三筆可確認的失敗（例如 NACK）會熄滅，TCP 斷線則立即熄滅，下次有效輪詢可重新點亮。背景輪詢不會更新「最近查詢結果」或「常開」狀態。
@@ -60,7 +60,7 @@ SOYAL 回應沒有交易識別碼。新版會拒絕閒置時收到的非預期�
 
 ## Stage 6 主門解鎖輸出驗收
 
-1. 在 HACS 重新下載並選擇 `v0.7.0-beta.8`，重啟 HA 後確認 Node 02 裝置下有「主門解鎖輸出」。
+1. 在 HACS 重新下載並選擇 `v0.7.0-beta.9`，重啟 HA 後確認 Node 02 裝置下有「主門解鎖輸出」。
 2. 待機時確認 OFF。受控測試脈衝開門、常開、解除常開時，依序確認短暫 ON、維持 ON、回到 OFF。
 3. 受控斷線時確認 Unavailable，恢復後確認感測器採用最新輪詢資料。
 
@@ -70,4 +70,4 @@ SOYAL 回應沒有交易識別碼。新版會拒絕閒置時收到的非預期�
 
 在測試分支的 Node 02 裝置按一次「讀取 FIFO 最舊事件」。檢查「FIFO 讀取結果」與控制器時間、事件碼、站號、Port 及 User Address。時間採控制器本地 RTC，無效時間顯示為空值。未辨識的事件碼保留數值，未知資料仍留在原始封包中。原始資料可能含敏感資訊，請勿公開轉貼。
 
-本階段接受 Node 02 的 7-byte ACK、NACK 與已知 31-byte 事件框架。ACK 分類為空佇列，仍須以現場資料核對控制器的實際空佇列格式。NACK 代表拒絕。只讀取 FIFO 最前端，重複查詢可能讀到同一筆事件，也不會觸發通行通知。此操作不推進 FIFO，因此無法看到還排在後方的記錄。
+本階段接受 Node 02 的 7-byte ACK、NACK 與已知 31-byte 事件框架。ACK 分類為空佇列，仍須以現場資料核對控制器的實際空佇列格式。NACK 代表拒絕。`0x25` 只讀取 FIFO 最舊事件，不會移除紀錄。重複查詢可能讀到同一筆事件，此版本不提供即時刷卡事件串流。此操作不推進 FIFO，因此無法看到還排在後方的記錄。

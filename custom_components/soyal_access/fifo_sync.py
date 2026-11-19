@@ -22,6 +22,10 @@ def utc_now():
     return dt_util.utcnow().isoformat()
 
 
+class FifoReadProtocolError(ProtocolError):
+    """An oldest-event response could not be matched to the read."""
+
+
 class FifoSync:
     def __init__(self, hass, entry, hub, storage):
         self.hass = hass
@@ -35,6 +39,8 @@ class FifoSync:
         self.state = "idle" if self.enabled else "disabled"
         self.attributes = {}
         self._advance_candidate = None
+        self._pause_reason = None
+        self._last_diagnostics = {}
 
     @property
     def enabled(self):
@@ -57,6 +63,18 @@ class FifoSync:
 
     def start(self):
         self.task = asyncio.create_task(self._run(), name="soyal_access_fifo_sync")
+
+    async def clear_pause(self):
+        if self.enabled or self.hub.fifo_operation.locked() or self._single_task:
+            raise HomeAssistantError(
+                "Disable automatic FIFO sync and wait for FIFO operations"
+            )
+        async with self.hub.fifo_operation:
+            await self.storage.set_pause(None)
+            self._pause_reason = None
+            self._advance_candidate = None
+            self._report("disabled")
+            self._wake.set()
 
     async def sync_one(self):
         if self.enabled:
@@ -100,19 +118,37 @@ class FifoSync:
                 "last_single_sync_utc": utc_now(),
                 **attributes,
             }
-        if not self.enabled:
+        if "last_error_type" in attributes:
+            self._last_diagnostics.update(attributes)
+        if "last_sync_utc" in attributes:
+            self._last_diagnostics["last_sync_utc"] = attributes["last_sync_utc"]
+        if self._pause_reason:
+            state = "paused"
+            attributes = {**attributes, "pause_reason": self._pause_reason}
+        elif not self.enabled:
             state, attributes = "disabled", {}
-        attributes = {**self._last_single, **attributes}
+        attributes = {**self._last_diagnostics, **self._last_single, **attributes}
         if (state, attributes) != (self.state, self.attributes):
             self.state, self.attributes = state, attributes
             self.hub.notify()
 
     def _ready(self):
-        return (self.enabled or self._single_task is not None) and self.hub.can_query
+        return (
+            not self._pause_reason
+            and (self.enabled or self._single_task is not None)
+            and self.hub.can_query
+        )
 
     async def _run(self):
+        try:
+            async with self.hub.fifo_operation:
+                self._pause_reason = await self.storage.pause_reason()
+                if self._pause_reason:
+                    self._report("paused")
+        except (OSError, sqlite3.Error) as err:
+            self._report("storage_error", last_error_type=type(err).__name__)
         while True:
-            if not self.enabled:
+            if not self.enabled or self._pause_reason:
                 self._wake.clear()
                 await self._wake.wait()
                 continue
@@ -132,17 +168,23 @@ class FifoSync:
         ):
             raise NotSentError("FIFO synchronization yielded")
 
+    async def _read_frame(self):
+        try:
+            return await self.hub.transport.read_oldest_event()
+        except ProtocolError as err:
+            raise FifoReadProtocolError from err
+
     async def _read(self):
         async with self.hub._transaction:
             self._check_wire_priority()
-            return await self.hub.transport.read_oldest_event()
+            return await self._read_frame()
 
     async def _verified_pop(self, expected_raw, session):
         async with self.hub._transaction:
             self._check_wire_priority(session)
             try:
-                frame = await self.hub.transport.read_oldest_event()
-            except (OSError, ProtocolError) as err:
+                frame = await self._read_frame()
+            except OSError as err:
                 # The removal was never attempted, regardless of the read result.
                 raise NotSentError("FIFO head could not be revalidated") from err
             if frame.code in (4, 5) or encode(frame) != expected_raw:
@@ -155,6 +197,10 @@ class FifoSync:
         self._advance_candidate = None
         pending = None
         try:
+            self._pause_reason = self._pause_reason or await self.storage.pause_reason()
+            if self._pause_reason:
+                self._report("paused", last_error_type=self._pause_reason)
+                return IDLE_DELAY
             pending = await self.storage.progress()
             if pending and pending[1] == "pop_uncertain":
                 self._report("pop_uncertain", pending_event_id=pending[0])
@@ -250,6 +296,14 @@ class FifoSync:
             else:
                 self._report("idle", last_sync_utc=utc_now())
             return EVENT_DELAY
+        except FifoReadProtocolError:
+            self._pause_reason = "fifo_read_protocol_error"
+            self._report("paused", last_error_type=self._pause_reason)
+            try:
+                await self.storage.set_pause(self._pause_reason)
+            except (OSError, sqlite3.Error):
+                self._report("paused", last_error_type="pause_storage_error")
+            return IDLE_DELAY
         except NotSentError:
             return IDLE_DELAY
         except (sqlite3.Error, OSError, ProtocolError) as err:

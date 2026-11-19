@@ -93,6 +93,10 @@ Stage 8A 只在按下「讀取 FIFO 最舊事件」後保存該次觀察，不�
 
 首次實機驗收請保持自動同步 OFF，先以「讀取最舊 FIFO 事件」核對頭部，再按 Node 02 的「同步並移除單筆 FIFO 事件」一次。透過「FIFO 同步狀態」的 `last_single_sync_result` 查看結果。`popped_confirmed` 表示已確認移除並提交 SQLite，可用 `last_event_id` 核對本機正式紀錄，再用手動唯讀查詢核對下一筆。`pop_uncertain` 表示移除結果未明，應停止驗收並檢查持久化進度。按鈕不會自動再讀下一筆，也不會切換自動同步。
 
+若同步讀取收到無法配對的回應，例如 `0x25` 期間收到可與移除 ACK 混淆的 12-byte 封包，整合會隔離該 TCP Session 並將 `fifo_read_protocol_error` 寫入 SQLite。TCP 重新驗證後，I/O 輪詢與門禁控制可獨立恢復。FIFO 同步維持 `paused`，切換同步開關或重新載入都不會解除。人工唯讀查詢仍可用於診斷，單筆消費同樣受暫停限制。
+
+確認干擾來源已排除，並核對現場回應及 SQLite 未決紀錄後，保持自動同步 OFF。由管理員呼叫 `soyal_access.clear_fifo_pause`，傳入該 SOYAL Config Entry 的 `entry_id` 與 `verified: true`。這只清除協定暫停，不送任何指令、不切換自動同步，也不清除未決移除。未決事件仍須經既有的唯讀核對流程確認，不會重送移除指令。若仍收到無法配對的回應，重新啟用後會再安全暫停。
+
 Stage 8B 在每個 Entry 的既有 SQLite 加入版本為 1 的 `fifo_sync_schema`、`fifo_sync_progress` 與 `fifo_access_events`。舊 `fifo_observations` 不做回填或覆寫。正式紀錄使用本地序號。前一筆已確認移除後，即使下一筆的原始資料完全相同，也會另存一筆。
 
 每輪先讀取頭部並提交正式事件，再提交 `pop_uncertain` 刪除意圖。在同一條 TCP Session 重新讀取並核對原始頭部後，才允許送一次 `0x37`。只有收到已實測格式的 12-byte Node 02 ACK 且 SQLite 完成提交，才記為 `popped_confirmed`。NACK、逾時、斷線、意圖提交後的重啟，或 ACK 後提交失敗，都可能留下待確認狀態。單靠重連、相同頭部或空佇列候選 ACK 不會重送或解開待確認。若在同一條 TCP Session 以唯讀方式連續兩次查到同一個不同的有效頭部，記為 `advanced_observed` 並保留新頭部的摘要證據，下一輪才重新評估新頭部。同內容頭部無法安全區分，保持待確認，可關閉自動同步並使用手動唯讀查看。切換開關不清除未決紀錄。

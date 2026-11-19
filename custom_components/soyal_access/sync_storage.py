@@ -25,6 +25,33 @@ class SyncStorage(FifoStorage):
     async def transition(self, event_id, previous, status, now, evidence=None):
         await self._run(self._transition, event_id, previous, status, now, evidence)
 
+    async def pause_reason(self):
+        return await self._run(self._pause_reason)
+
+    async def set_pause(self, reason):
+        await self._run(self._set_pause, reason)
+
+    def _pause_reason(self):
+        if not self.path.exists():
+            return None
+        with closing(sqlite3.connect(f"{self.path.as_uri()}?mode=ro", uri=True)) as db:
+            table = db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'fifo_sync_pause'"
+            ).fetchone()
+            if not table:
+                return None
+            row = db.execute("SELECT reason FROM fifo_sync_pause").fetchone()
+            return row[0] if row else None
+
+    def _set_pause(self, reason):
+        with closing(self._connect()) as db, db:
+            if reason is None:
+                db.execute("DELETE FROM fifo_sync_pause")
+            else:
+                db.execute(
+                    "INSERT OR REPLACE INTO fifo_sync_pause VALUES (1, ?)", (reason,)
+                )
+
     def _connect(self):
         self._prepare_file()
         db = sqlite3.connect(self.path)
@@ -44,6 +71,12 @@ class SyncStorage(FifoStorage):
                 singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
                 version INTEGER NOT NULL,
                 endpoint TEXT NOT NULL
+            )
+        """)
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS fifo_sync_pause (
+                singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                reason TEXT NOT NULL
             )
         """)
         row = db.execute(

@@ -470,3 +470,91 @@ async def test_single_fifo_press(hass, tmp_path, mode, monkeypatch):
                 len(rows(hub.fifo_storage.path, "SELECT id FROM fifo_access_events"))
                 == 2
             )
+
+
+@pytest.mark.parametrize("delayed_pop", [False, True])
+async def test_extended_fifo_ack_has_no_command_identity(hass, tmp_path, delayed_pop):
+    hass.config.config_dir = str(tmp_path)
+    async with gateway(allow_fifo=True, allow_pop=True) as (port, connections):
+        entry = await setup_entry(hass, port, timeout=0.35)
+        hub = entry.runtime_data
+        writer, requests, closed = await next_item(connections)
+        await validate(hub, writer, requests)
+        if delayed_pop:
+            await toggle(hass, entry, True)
+            event_id = await expect_saved_pop(hub, writer, requests, synthetic_event())
+            await asyncio.wait_for(closed.wait(), 2)
+            await toggle(hass, entry, False)
+            writer, requests, closed = await next_item(connections)
+            await validate(hub, writer, requests)
+
+        read = asyncio.create_task(hub.read_oldest_event())
+        # A genuine empty reply and a delayed removal reply look identical here.
+        await read_head(writer, requests, FIELD_POP_ACK)
+        await read
+        assert hub.fifo_result == "invalid_response"
+        await asyncio.wait_for(closed.wait(), 2)
+        progress = await hub.fifo_storage.progress()
+        if delayed_pop:
+            assert progress[:2] == (event_id, "pop_uncertain")
+        else:
+            assert progress is None
+        writer, requests, _ = await next_item(connections)
+        await validate(hub, writer, requests)
+        assert hub.can_pulse
+        await no_commands(writer, requests)
+
+
+@pytest.mark.parametrize("pending_pop", [False, True])
+async def test_auto_fifo_protocol_pause_survives_reload(hass, tmp_path, pending_pop):
+    hass.config.config_dir = str(tmp_path)
+    async with gateway(allow_fifo=True, allow_pop=True) as (port, connections):
+        entry = await setup_entry(hass, port, timeout=0.35)
+        hub = entry.runtime_data
+        writer, requests, closed = await next_item(connections)
+        await validate(hub, writer, requests)
+        await toggle(hass, entry, True)
+        if pending_pop:
+            await expect_saved_pop(hub, writer, requests, synthetic_event())
+            await asyncio.wait_for(closed.wait(), 2)
+            writer, requests, closed = await next_item(connections)
+            await validate(hub, writer, requests)
+
+        await read_head(writer, requests, FIELD_POP_ACK)
+        await asyncio.wait_for(closed.wait(), 2)
+        await eventually(lambda: hub.fifo_sync.state == "paused")
+        writer, requests, _ = await next_item(connections)
+        await validate(hub, writer, requests)
+        action = asyncio.create_task(hub.pulse())
+        assert await next_command(writer, requests) == bytes.fromhex(
+            "7E 05 02 21 84 58 FF"
+        )
+        await send(writer, IO)
+        await action
+        await no_commands(writer, requests, duration=0.65)
+        await toggle(hass, entry, False)
+        assert hub.fifo_sync.attributes["pause_reason"] == "fifo_read_protocol_error"
+        await toggle(hass, entry, True)
+        await no_commands(writer, requests)
+        assert await hass.config_entries.async_reload(entry.entry_id)
+        hub = entry.runtime_data
+        writer, requests, _ = await next_item(connections)
+        await validate(hub, writer, requests)
+        await eventually(lambda: hub.fifo_sync.state == "paused")
+        await no_commands(writer, requests)
+        await toggle(hass, entry, False)
+        await hass.services.async_call(
+            DOMAIN,
+            "clear_fifo_pause",
+            {"entry_id": entry.entry_id, "verified": True},
+            blocking=True,
+        )
+        assert await hub.fifo_storage.pause_reason() is None
+        progress = await hub.fifo_storage.progress()
+        assert (progress[1] if progress else None) == (
+            "pop_uncertain" if pending_pop else None
+        )
+        await no_commands(writer, requests)
+        await toggle(hass, entry, True)
+        await read_head(writer, requests, ACK)
+        await read_head(writer, requests, ACK)

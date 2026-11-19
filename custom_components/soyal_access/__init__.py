@@ -1,9 +1,43 @@
 """SOYAL Gateway connectivity."""
 
+import voluptuous as vol
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
+from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.service import async_register_admin_service
 
-from .const import PLATFORMS
+from .const import DOMAIN, PLATFORMS
 from .hub import Hub
+
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
+
+async def async_setup(hass, config):
+    async def clear_fifo_pause(call):
+        if call.data["verified"] is not True:
+            raise HomeAssistantError(
+                "Verify the FIFO protocol issue before clearing the pause"
+            )
+        entry = hass.config_entries.async_get_entry(call.data["entry_id"])
+        if (
+            entry is None
+            or entry.domain != DOMAIN
+            or entry.state != ConfigEntryState.LOADED
+        ):
+            raise HomeAssistantError("SOYAL config entry is not loaded")
+        await entry.runtime_data.fifo_sync.clear_pause()
+
+    async_register_admin_service(
+        hass,
+        DOMAIN,
+        "clear_fifo_pause",
+        clear_fifo_pause,
+        schema=vol.Schema(
+            {vol.Required("entry_id"): str, vol.Required("verified"): bool}
+        ),
+    )
+    return True
 
 
 async def async_setup_entry(hass, entry):

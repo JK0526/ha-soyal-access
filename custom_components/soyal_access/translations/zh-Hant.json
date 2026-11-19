@@ -45,6 +45,9 @@
       "pulse_open": {
         "name": "脈衝開門"
       },
+      "sync_one_fifo_event": {
+        "name": "同步並移除單筆 FIFO 事件"
+      },
       "read_fifo_event": {
         "name": "讀取 FIFO 最舊事件"
       }

@@ -89,7 +89,9 @@ Stage 8A 只在按下「讀取 FIFO 最舊事件」後保存該次觀察，不�
 
 ## Stage 8B 自動同步與移除驗收
 
-「FIFO 自動同步」預設關閉。開啟後將設定保存在 Config Entry，重啟仍會先載入 SQLite 同步進度。啟用前先備份資料庫，並確認 HA 是唯一會消費此 FIFO 的客戶端。先用獨立測試控制器確認 FIFO 為空，再只產生一筆可辨識的測試事件。停止所有其他事件來源及 FIFO 發送端，用手動讀取核對頭部後才開啟同步。確認這段期間不會有新事件加入。同步沒有單筆模式，不可用手動關閉的速度在已有積壓的控制器上限制筆數。人工核對本機正式紀錄、移除回應及下一筆頭部。最後關閉同步，確認沒有新的自動 FIFO 指令。此分支尚未實機驗收。
+「FIFO 自動同步」預設關閉。開啟後將設定保存於 Config Entry，重啟仍會先載入 SQLite 同步進度。驗收前先備份 SQLite，並確認 HA 是唯一會消費此 FIFO 的客戶端。
+
+首次實機驗收請保持自動同步 OFF，先以「讀取最舊 FIFO 事件」核對頭部，再按 Node 02 的「同步並移除單筆 FIFO 事件」一次。透過「FIFO 同步狀態」的 `last_single_sync_result` 查看結果。`popped_confirmed` 表示已確認移除並提交 SQLite，可用 `last_event_id` 核對本機正式紀錄，再用手動唯讀查詢核對下一筆。`pop_uncertain` 表示移除結果未明，應停止驗收並檢查持久化進度。按鈕不會自動再讀下一筆，也不會切換自動同步。
 
 Stage 8B 在每個 Entry 的既有 SQLite 加入版本為 1 的 `fifo_sync_schema`、`fifo_sync_progress` 與 `fifo_access_events`。舊 `fifo_observations` 不做回填或覆寫。正式紀錄使用本地序號。前一筆已確認移除後，即使下一筆的原始資料完全相同，也會另存一筆。
 

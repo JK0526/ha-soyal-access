@@ -2,6 +2,11 @@
 
 版本來源為 [manifest.json](custom_components/soyal_access/manifest.json)。Git Tag 使用 `v` 前綴。預發佈使用 Semantic Versioning 的 `-beta.N` 或 `-rc.N`，正式版使用不帶預發佈後綴的版本。
 
+## v0.7.1-beta.3
+
+- Node 02 新增「同步並移除單筆 FIFO 事件」。自動同步關閉時，每次操作最多移除一筆，沿用 Stage 8B 的 SQLite 提交、頭部核對與移除回應驗證。
+- 既有 FIFO 同步狀態顯示最近一次單筆操作結果。遇到未決移除時，按鈕拒絕再次消費。
+
 ## v0.7.1-beta.2
 
 - Stage 8B 驗收版。新增 Node 02 FIFO 自動同步，首次安裝預設關閉。

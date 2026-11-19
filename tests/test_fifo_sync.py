@@ -401,3 +401,72 @@ async def test_empty_after_one_event_does_not_send_another_removal(hass, tmp_pat
             hub.fifo_storage.path, "SELECT consumption_status FROM fifo_access_events"
         ) == [("popped_confirmed",)]
         assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+@pytest.mark.parametrize(
+    "mode",
+    ["empty", "success", "short_ack", "timeout", "mismatch", "save", "intent", "auto"],
+)
+async def test_single_fifo_press(hass, tmp_path, mode, monkeypatch):
+    from homeassistant.exceptions import HomeAssistantError
+
+    hass.config.config_dir = str(tmp_path)
+    async with gateway(allow_fifo=True, allow_pop=True) as (port, connections):
+        entry = await setup_entry(hass, port, timeout=0.35)
+        hub = entry.runtime_data
+        writer, requests, _ = await next_item(connections)
+        await validate(hub, writer, requests)
+        entity = er.async_get(hass).async_get_entity_id(
+            "button", DOMAIN, f"{entry.entry_id}:2:sync_one_fifo_event"
+        )
+
+        async def press():
+            await hass.services.async_call(
+                "button", "press", {"entity_id": entity}, blocking=True
+            )
+
+        if mode == "auto":
+            await toggle(hass, entry, True)
+            with pytest.raises(HomeAssistantError, match="must be disabled"):
+                await press()
+            return
+
+        async def fail(*args):
+            raise sqlite3.OperationalError("simulated failure")
+
+        if mode in ("save", "intent"):
+            monkeypatch.setattr(
+                hub.fifo_storage, "save_head" if mode == "save" else "transition", fail
+            )
+        raw = synthetic_event()
+        for _ in range(2 if mode == "success" else 1):
+            task = asyncio.create_task(press())
+            assert await next_command(writer, requests) == FIFO
+            with pytest.raises(HomeAssistantError, match="already running"):
+                await press()
+            await send(writer, ACK if mode == "empty" else raw)
+            if mode == "mismatch":
+                await read_head(writer, requests, synthetic_event(0x10))
+            elif mode not in ("empty", "save", "intent"):
+                await read_head(writer, requests, raw)
+                assert await next_command(writer, requests) == POP
+                if mode != "timeout":
+                    await send(writer, ACK if mode == "short_ack" else FIELD_POP_ACK)
+            if mode in ("short_ack", "timeout", "mismatch", "save", "intent"):
+                with pytest.raises(HomeAssistantError):
+                    await task
+            else:
+                await task
+            assert not hub.fifo_sync.enabled
+            if mode in ("short_ack", "timeout"):
+                assert (await hub.fifo_storage.progress())[1] == "pop_uncertain"
+                writer, requests, _ = await next_item(connections)
+                await validate(hub, writer, requests)
+                with pytest.raises(HomeAssistantError, match="pop_uncertain"):
+                    await press()
+            await no_commands(writer, requests)
+        if mode == "success":
+            assert (
+                len(rows(hub.fifo_storage.path, "SELECT id FROM fifo_access_events"))
+                == 2
+            )

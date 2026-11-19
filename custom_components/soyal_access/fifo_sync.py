@@ -5,6 +5,7 @@ import logging
 import sqlite3
 from hashlib import sha256
 
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util import dt as dt_util
 
 from .fifo import parse_event
@@ -28,6 +29,8 @@ class FifoSync:
         self.hub = hub
         self.storage = storage
         self.task = None
+        self._single_task = None
+        self._last_single = {}
         self._wake = asyncio.Event()
         self.state = "idle" if self.enabled else "disabled"
         self.attributes = {}
@@ -38,6 +41,10 @@ class FifoSync:
         return self.entry.data.get(ENABLE_KEY) is True
 
     def set_enabled(self, enabled):
+        if self._single_task is not None:
+            if enabled:
+                raise HomeAssistantError("Single FIFO synchronization is running")
+            return
         self._advance_candidate = None
         self.hass.config_entries.async_update_entry(
             self.entry, data={**self.entry.data, ENABLE_KEY: enabled}
@@ -51,21 +58,57 @@ class FifoSync:
     def start(self):
         self.task = asyncio.create_task(self._run(), name="soyal_access_fifo_sync")
 
+    async def sync_one(self):
+        if self.enabled:
+            raise HomeAssistantError("Automatic FIFO synchronization must be disabled")
+        if not self.hub.can_query:
+            raise HomeAssistantError("Gateway or Node 02 is unavailable")
+        if (
+            self._single_task
+            or self.hub.fifo_operation.locked()
+            or self.hub.fifo_pending
+        ):
+            raise HomeAssistantError("FIFO operation already running")
+        task = self._single_task = asyncio.create_task(self._run_single())
+        try:
+            await task
+        finally:
+            self._single_task = None
+
+    async def _run_single(self):
+        async with self.hub.fifo_operation:
+            self._report("communication_failed")
+            await self._cycle()
+            result = self._last_single["last_single_sync_result"]
+            if result not in ("empty", "popped_confirmed"):
+                raise HomeAssistantError(f"Single FIFO synchronization: {result}")
+
     async def stop(self):
+        if self._single_task is not None:
+            self._single_task.cancel()
+            await asyncio.gather(self._single_task, return_exceptions=True)
+
         if self.task is not None:
             self.task.cancel()
             await asyncio.gather(self.task, return_exceptions=True)
             self.task = None
 
     def _report(self, state, **attributes):
+        if self._single_task is not None:
+            self._last_single = {
+                "last_single_sync_result": state,
+                "last_single_sync_utc": utc_now(),
+                **attributes,
+            }
         if not self.enabled:
             state, attributes = "disabled", {}
+        attributes = {**self._last_single, **attributes}
         if (state, attributes) != (self.state, self.attributes):
             self.state, self.attributes = state, attributes
             self.hub.notify()
 
     def _ready(self):
-        return self.enabled and self.hub.can_query
+        return (self.enabled or self._single_task is not None) and self.hub.can_query
 
     async def _run(self):
         while True:
@@ -115,6 +158,8 @@ class FifoSync:
             pending = await self.storage.progress()
             if pending and pending[1] == "pop_uncertain":
                 self._report("pop_uncertain", pending_event_id=pending[0])
+                if self._single_task is not None:
+                    return IDLE_DELAY
             session = self.hub.transport.session_id
             frame = await self._read()
             if frame.code in (4, 5):
@@ -129,7 +174,7 @@ class FifoSync:
                         else "head_mismatch",
                     )
                 else:
-                    self._report("idle")
+                    self._report("empty" if self._single_task else "idle")
                 return IDLE_DELAY
 
             event = parse_event(frame)
@@ -160,7 +205,9 @@ class FifoSync:
                 return IDLE_DELAY
 
             event_id = await self.storage.save_head(event)
-            self._report("syncing", pending_event_id=event_id)
+            self._report(
+                "saved" if self._single_task else "syncing", pending_event_id=event_id
+            )
             if (
                 not self._ready()
                 or self.hub.fifo_pending
@@ -198,7 +245,10 @@ class FifoSync:
             await self.storage.transition(
                 event_id, "pop_uncertain", "popped_confirmed", utc_now()
             )
-            self._report("idle", last_sync_utc=utc_now())
+            if self._single_task:
+                self._report("popped_confirmed", last_event_id=event_id)
+            else:
+                self._report("idle", last_sync_utc=utc_now())
             return EVENT_DELAY
         except NotSentError:
             return IDLE_DELAY
@@ -220,5 +270,8 @@ class FifoSync:
             ):
                 self._report("storage_error", last_error_type=error)
             else:
-                self._report("paused", last_error_type=error)
+                self._report(
+                    "communication_failed" if self._single_task else "paused",
+                    last_error_type=error,
+                )
             return IDLE_DELAY

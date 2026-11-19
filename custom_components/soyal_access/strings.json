@@ -45,6 +45,9 @@
       "pulse_open": {
         "name": "Pulse open"
       },
+      "sync_one_fifo_event": {
+        "name": "Sync and remove one FIFO event"
+      },
       "read_fifo_event": {
         "name": "Read Oldest FIFO Event"
       }

@@ -10,6 +10,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
             QueryButton(entry.runtime_data),
             PulseButton(entry.runtime_data),
             FifoButton(entry.runtime_data),
+            SingleFifoSyncButton(entry.runtime_data),
         ]
     )
 
@@ -54,3 +55,10 @@ class FifoButton(QueryButton):
 
     async def async_press(self):
         await self._hub.read_oldest_event()
+
+
+class SingleFifoSyncButton(QueryButton):
+    _attr_translation_key = "sync_one_fifo_event"
+
+    async def async_press(self):
+        await self._hub.fifo_sync.sync_one()

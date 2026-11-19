@@ -2,6 +2,12 @@
 
 版本來源為 [manifest.json](custom_components/soyal_access/manifest.json)。Git Tag 使用 `v` 前綴。預發佈使用 Semantic Versioning 的 `-beta.N` 或 `-rc.N`，正式版使用不帶預發佈後綴的版本。
 
+## v0.7.1-beta.5
+
+- 保存 FIFO 自動同步的使用者設定。重啟或 Reload 後，需通訊驗證通過、SQLite 安全狀態為 `safe`，且沒有協定暫停或未決移除，才會恢復。
+- 每輪發送前先提交 `in_flight`，安全結束才提交 `safe`。交易中斷或 SQLite 失敗時停止背景同步，門禁控制與輪詢獨立運作。
+- 升級後缺少安全基準的資料庫預設 `paused`。管理員確認後可用 `soyal_access.clear_fifo_pause` 建立基準。服務保留 `pop_uncertain`，不發送控制器指令。
+
 ## v0.7.1-beta.4
 
 - FIFO 同步收到無法配對的回應時，將暫停原因保存至 SQLite，停止背景 FIFO 查詢及移除。TCP 重連後，200 ms 輪詢與門禁控制可獨立恢復。

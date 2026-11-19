@@ -2,6 +2,12 @@
 
 版本來源為 [manifest.json](custom_components/soyal_access/manifest.json)。Git Tag 使用 `v` 前綴。預發佈使用 Semantic Versioning 的 `-beta.N` 或 `-rc.N`，正式版使用不帶預發佈後綴的版本。
 
+## v0.6.0-beta.1
+
+- 拆分 Hub、Transport、Coordinator 和 Control，沿用 SOYAL 封包與單一持續 TCP Session。
+- 控制依序執行，背景健康輪詢遇到控制等待時讓出。卸載和 HA 停止時收回背景工作與連線。
+- 保留設定、裝置與實體識別、SQLite 及未決紀錄相容性。正式事件預覽與刪除維持停用。
+
 ## v0.5.1-beta.3
 
 - 暫停正式環境 Node 02 的 0x25 事件預覽。

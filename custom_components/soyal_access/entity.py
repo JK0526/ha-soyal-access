@@ -27,4 +27,4 @@ class SoyalEntity(Entity):
 class ControlEntity(SoyalEntity):
     @property
     def available(self):
-        return self.manager.control_block_reason(self.station) is None
+        return self.manager.control.control_block_reason(self.station) is None

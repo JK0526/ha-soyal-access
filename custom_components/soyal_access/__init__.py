@@ -5,13 +5,13 @@ from .const import DOMAIN, PLATFORMS
 
 async def async_setup_entry(hass, entry):
     """Load one shared gateway manager."""
+    from homeassistant.const import EVENT_HOMEASSISTANT_STOP
     from homeassistant.helpers import device_registry as dr
 
-    from .gateway import GatewayManager
+    from .hub import Hub
     from .websocket import async_register
 
-    manager = GatewayManager(hass, entry)
-    await manager.load()
+    manager = Hub(hass, entry)
     entry.runtime_data = manager
     async_register(hass)
     registry = dr.async_get(hass)
@@ -23,6 +23,7 @@ async def async_setup_entry(hass, entry):
             config_entry_id=entry.entry_id, **manager.device_info(station)
         )
     try:
+        await manager.load()
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     except BaseException:
         await manager.close()
@@ -32,6 +33,11 @@ async def async_setup_entry(hass, entry):
         hass.config_entries.async_update_entry(
             entry, data=dict(entry.data) | {"node02_event_preview": False}
         )
+
+    async def stop(_event):
+        await manager.close()
+
+    entry.async_on_unload(hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, stop))
     manager.start_monitoring()
     return True
 

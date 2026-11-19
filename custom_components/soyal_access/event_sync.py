@@ -5,6 +5,8 @@ import sqlite3
 from collections import defaultdict
 from time import monotonic
 
+from homeassistant.exceptions import HomeAssistantError
+
 from .protocol import Frame, ProtocolError, ReplyFormat, ReplyKind, encode
 
 EVENTS = ReplyFormat(frozenset({0x0B, 0x10, 0x1C}), min_data_size=24)
@@ -96,3 +98,74 @@ class FifoSync:
                 self.rate[station] = count / (monotonic() - started)
                 await asyncio.sleep(interval)
         return count
+
+
+class EventPreview:
+    """Bounded loopback-only preview used by the TCP simulator."""
+
+    def __init__(self, transport, events, control, *, enabled, limit):
+        self.transport = transport
+        self.events = events
+        self.control = control
+        self.enabled = enabled
+        self.limit = limit
+        self.attempts = 0
+        self.duplicates = 0
+        self.status = "disabled"
+        self.task = None
+
+    def start(self):
+        if self.enabled:
+            self.status = "waiting"
+            self.task = asyncio.create_task(self._poll_events())
+
+    async def stop(self):
+        if self.task is not None:
+            self.task.cancel()
+            await asyncio.gather(self.task, return_exceptions=True)
+
+    async def _poll_events(self):
+        # Completion-based delay prevents overlap or catch-up bursts.
+        while self.attempts < self.limit:
+            await asyncio.sleep(0.5)
+            async with self.transport.background_slot() as acquired:
+                if not acquired or self.control.paused:
+                    continue
+                if 2 in self.control.uncertain or self.transport.is_uncertain(2):
+                    self.status = "uncertain"
+                    return
+                try:
+                    self.attempts += 1
+                    reply = await self.transport.transact(Frame(2, 0x25), EVENTS)
+                    if reply.kind is not ReplyKind.DATA:
+                        self.status = (
+                            "empty_ack_unverified"
+                            if reply.kind is ReplyKind.ACK
+                            else "nack"
+                        )
+                        return
+                    raw = encode(reply.frame)
+                    state = await self.events.state(2)
+                    if state["head"] == raw and state["event_id"] is not None:
+                        self.duplicates += 1
+                        self.status = "duplicate_head"
+                        return
+                    elif state["phase"] == "idle" and state["head"] is None:
+                        await self.events.save_head(2, raw)
+                    else:
+                        self.status = "checkpoint_mismatch"
+                        return
+                    self.status = "oldest_event_saved"
+                except asyncio.CancelledError:
+                    await self.control.record_read_uncertainty(2, "legacy_unknown")
+                    raise
+                except (
+                    OSError,
+                    ValueError,
+                    RuntimeError,
+                    HomeAssistantError,
+                    sqlite3.Error,
+                ) as err:
+                    self.status = "query_failed_" + type(err).__name__
+                    await self.control.record_read_uncertainty(2, "legacy_unknown")
+                    return

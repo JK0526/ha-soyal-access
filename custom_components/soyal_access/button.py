@@ -14,4 +14,4 @@ async def async_setup_entry(hass, entry, async_add_entities):
 
 class PulseButton(ControlEntity, ButtonEntity):
     async def async_press(self):
-        await self.manager.control(self.station, 0x84)
+        await self.manager.control.execute(self.station, 0x84)

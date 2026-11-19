@@ -7,7 +7,8 @@ from custom_components.soyal_access.protocol import Frame, FrameBuffer
 
 
 class SimulatedGateway:
-    def __init__(self) -> None:
+    def __init__(self, *, persistent=False) -> None:
+        self._persistent = persistent
         self.requests: asyncio.Queue[Frame] = asyncio.Queue()
         self.responses: asyncio.Queue[tuple[bytes, ...] | None] = asyncio.Queue()
         self._handlers: set[asyncio.Task] = set()
@@ -42,7 +43,8 @@ class SimulatedGateway:
                         writer.write(response_chunk)
                         await writer.drain()
                         await asyncio.sleep(0)
-                    break
+                    if not self._persistent:
+                        break
         finally:
             writer.close()
             try:

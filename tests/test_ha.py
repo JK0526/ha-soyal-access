@@ -132,7 +132,7 @@ async def test_config_flow_and_reconfigure(hass):
 @pytest.mark.parametrize("response_kind", ("ack", "anonymous", "field"))
 async def test_devices_actions_and_lifecycle(hass, response_kind):
     responses = control_replies(response_kind)
-    gateway = SimulatedGateway()
+    gateway = SimulatedGateway(persistent=True)
     async with gateway.listen() as port:
         entry = await setup_gateway(hass, port=port, enable_control=True)
         registry = dr.async_get(hass)
@@ -156,19 +156,19 @@ async def test_devices_actions_and_lifecycle(hass, response_kind):
             platform, key, action = actions[data]
             await service(hass, entry, platform, node, key, action)
             assert encode(gateway.requests.get_nowait()) == bytes.fromhex(field_hex)
-            status = entry.runtime_data.status[node]
+            status = entry.runtime_data.coordinator.status[node]
             assert status.last_response is not None
             assert status.outcome == (
                 "ack" if response_kind == "ack" else "data_response"
             )
-            assert node not in entry.runtime_data.uncertain
+            assert node not in entry.runtime_data.control.uncertain
             assert (
                 hass.states.get(
                     entity_id(hass, entry, "switch", node, "hold_open")
                 ).state
                 == STATE_UNKNOWN
             )
-            assert isinstance(entry.runtime_data.connected, bool)
+            assert isinstance(entry.runtime_data.coordinator.connected, bool)
         assert hass.states.get(switch_id).state == STATE_UNKNOWN
         assert hass.states.get(switch_id).attributes["assumed_state"]
         old = entry.runtime_data
@@ -188,29 +188,29 @@ async def test_nack_serialization_timeout_and_reload(hass):
             hass, port=port, enable_control=True, timeout=0.25, reconnect_delay=0
         )
         manager = entry.runtime_data
-        first = asyncio.create_task(manager.control(1, 0x84))
+        first = asyncio.create_task(manager.control.execute(1, 0x84))
         assert (await asyncio.wait_for(gateway.requests.get(), 1)).node == 1
-        second = asyncio.create_task(manager.control(2, 0x82))
+        second = asyncio.create_task(manager.control.execute(2, 0x82))
         with pytest.raises(TimeoutError):
             await asyncio.wait_for(gateway.requests.get(), 0.02)
-        assert manager.waiting == 1 and manager.active
+        assert manager.transport.waiting == 1 and manager.transport.active
         gateway.responses.put_nowait((acknowledge(1, 5),))
         with pytest.raises(HomeAssistantError, match="rejected"):
             await first
-        assert manager.status[1].outcome == "nack"
+        assert manager.coordinator.status[1].outcome == "nack"
         assert (await asyncio.wait_for(gateway.requests.get(), 1)).node == 2
         gateway.responses.put_nowait((acknowledge(2),))
         await second
 
         gateway.responses.put_nowait(None)
         with pytest.raises(HomeAssistantError, match="uncertain"):
-            await manager.control(1, 0x84)
+            await manager.control.execute(1, 0x84)
         assert gateway.requests.get_nowait().node == 1
-        assert manager.errors == 1
+        assert manager.coordinator.errors == 1
         assert await hass.config_entries.async_reload(entry.entry_id)
         await hass.async_block_till_done()
         manager = entry.runtime_data
-        assert manager.uncertain == {1}
+        assert manager.control.uncertain == {1}
         assert (
             hass.states.get(
                 entity_id(hass, entry, "binary_sensor", 1, "uncertain")
@@ -218,13 +218,13 @@ async def test_nack_serialization_timeout_and_reload(hass):
             == "on"
         )
         with pytest.raises(HomeAssistantError, match="blocked"):
-            await manager.control(1, 0x83)
+            await manager.control.execute(1, 0x83)
         assert gateway.requests.empty()
         gateway.responses.put_nowait((io_reply(1) + io_reply(2),))
-        await manager.control(2, 0x83)
+        await manager.control.execute(2, 0x83)
         assert gateway.requests.get_nowait().node == 2
-        assert manager.uncertain == {1}
-        assert manager.status[2].outcome == "data_response"
+        assert manager.control.uncertain == {1}
+        assert manager.coordinator.status[2].outcome == "data_response"
 
 
 async def test_connection_failure_cooldown_and_explicit_retry(hass):
@@ -236,13 +236,13 @@ async def test_connection_failure_cooldown_and_explicit_retry(hass):
             patch("asyncio.open_connection", side_effect=ConnectionRefusedError),
             pytest.raises(HomeAssistantError, match="disconnected"),
         ):
-            await manager.control(1, 0x84)
-        assert not manager.uncertain
+            await manager.control.execute(1, 0x84)
+        assert not manager.control.uncertain
         with pytest.raises(HomeAssistantError, match="cooldown"):
-            await manager.control(1, 0x84)
+            await manager.control.execute(1, 0x84)
         await asyncio.sleep(1.01)
         gateway.responses.put_nowait((acknowledge(1),))
-        await manager.control(1, 0x84)
+        await manager.control.execute(1, 0x84)
         assert gateway.requests.get_nowait().node == 1
         assert gateway.requests.empty()
 
@@ -250,38 +250,38 @@ async def test_connection_failure_cooldown_and_explicit_retry(hass):
 async def test_disabled_storage_failure_and_unload_in_flight(hass):
     disabled = await setup_gateway(hass)
     with pytest.raises(HomeAssistantError, match="disabled"):
-        await disabled.runtime_data.control(1, 0x84)
+        await disabled.runtime_data.control.execute(1, 0x84)
     gateway = SimulatedGateway()
     async with gateway.listen() as port:
         entry = await setup_gateway(hass, port=port, enable_control=True)
         manager = entry.runtime_data
         with (
-            patch.object(manager._store, "async_save", side_effect=OSError),
+            patch.object(manager.control._store, "async_save", side_effect=OSError),
             pytest.raises(HomeAssistantError, match="save"),
         ):
-            await manager.control(1, 0x84)
+            await manager.control.execute(1, 0x84)
         assert gateway.requests.empty()
         gateway.responses.put_nowait(None)
-        active = asyncio.create_task(manager.control(2, 0x84))
+        active = asyncio.create_task(manager.control.execute(2, 0x84))
         assert (await asyncio.wait_for(gateway.requests.get(), 1)).node == 2
         assert await hass.config_entries.async_unload(entry.entry_id)
         with pytest.raises(asyncio.CancelledError):
             await active
-        assert not manager.connected
+        assert not manager.coordinator.connected
 
 
 async def test_invalid_journal_blocks_all_stations(hass):
     with patch(
-        "custom_components.soyal_access.gateway.Store.async_load",
+        "custom_components.soyal_access.control.Store.async_load",
         new=AsyncMock(return_value={"uncertain": ["invalid"]}),
     ):
         entry = await setup_gateway(hass, enable_control=True)
     manager = entry.runtime_data
-    assert manager.uncertain == {1, 2}
-    for status in manager.status.values():
+    assert manager.control.uncertain == {1, 2}
+    for status in manager.coordinator.status.values():
         assert status.outcome == "storage_error"
     with pytest.raises(HomeAssistantError, match="blocked"):
-        await manager.control(1, 0x84)
+        await manager.control.execute(1, 0x84)
 
 
 async def test_ack_with_failed_journal_clear_stays_blocked(hass):
@@ -289,7 +289,7 @@ async def test_ack_with_failed_journal_clear_stays_blocked(hass):
     async with gateway.listen() as port:
         entry = await setup_gateway(hass, port=port, enable_control=True)
         manager = entry.runtime_data
-        save = manager._store.async_save
+        save = manager.control._store.async_save
 
         async def fail_clear(data):
             if not data["uncertain"]:
@@ -298,15 +298,15 @@ async def test_ack_with_failed_journal_clear_stays_blocked(hass):
 
         gateway.responses.put_nowait((acknowledge(1),))
         with (
-            patch.object(manager._store, "async_save", side_effect=fail_clear),
+            patch.object(manager.control._store, "async_save", side_effect=fail_clear),
             pytest.raises(HomeAssistantError, match="clear"),
         ):
-            await manager.control(1, 0x84)
+            await manager.control.execute(1, 0x84)
         assert gateway.requests.get_nowait().node == 1
-        assert manager.status[1].outcome == "storage_error"
-        assert manager.uncertain == {1}
+        assert manager.coordinator.status[1].outcome == "storage_error"
+        assert manager.control.uncertain == {1}
         assert await hass.config_entries.async_reload(entry.entry_id)
-        assert entry.runtime_data.uncertain == {1}
+        assert entry.runtime_data.control.uncertain == {1}
 
 
 @pytest.mark.parametrize(
@@ -332,8 +332,8 @@ async def test_invalid_control_response_leaves_station_uncertain(hass, reply):
             await service(hass, entry, "button", 1, "pulse_open", "press")
         assert gateway.requests.get_nowait() == Frame(1, 0x21, b"\x84")
         assert gateway.requests.empty()
-        assert entry.runtime_data.uncertain == {1}
-        assert entry.runtime_data.status[1].last_response is None
+        assert entry.runtime_data.control.uncertain == {1}
+        assert entry.runtime_data.coordinator.status[1].last_response is None
 
 
 async def test_event_storage_lifecycle_and_backup_barrier(hass, tmp_path):
@@ -351,7 +351,7 @@ async def test_event_storage_lifecycle_and_backup_barrier(hass, tmp_path):
         for _ in range(2):
             manager = entry.runtime_data
             assert manager.events.path.parent == tmp_path / "soyal_access"
-            assert manager.event_sync is None
+            assert not manager.preview.enabled
             await async_pre_backup(hass)
             diagnostic = asyncio.create_task(
                 async_get_config_entry_diagnostics(hass, entry)
@@ -369,7 +369,7 @@ async def test_event_storage_lifecycle_and_backup_barrier(hass, tmp_path):
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
         assert entry.runtime_data is not manager
-        assert entry.runtime_data.event_sync is None
+        assert not entry.runtime_data.preview.enabled
         connect.assert_not_called()
 
 
@@ -570,8 +570,8 @@ async def test_control_availability_after_frontend_reconfigure(
 
         def assert_control_state(enabled, blocked=()):
             assert entry.data["enable_control"] is enabled
-            assert entry.runtime_data.enabled is enabled
-            assert entry.runtime_data._client is not None
+            assert entry.runtime_data.control.enabled is enabled
+            assert entry.runtime_data.transport is not None
             for (node, platform), control_id in ids.items():
                 state = hass.states.get(control_id)
                 assert state is not None
@@ -637,7 +637,7 @@ async def test_unconfirmed_legacy_enable_control_is_fail_closed(hass, saved_valu
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
-    assert entry.runtime_data._client is not None
+    assert entry.runtime_data.transport is not None
     control_id = entity_id(hass, entry, "button", 1, "pulse_open")
     assert hass.states.get(control_id).state == "unavailable"
     from custom_components.soyal_access.diagnostics import (
@@ -652,7 +652,7 @@ async def test_unconfirmed_legacy_enable_control_is_fail_closed(hass, saved_valu
 async def test_persistent_monitor_without_control(hass):
     from unittest.mock import patch
 
-    from custom_components.soyal_access.session import SessionClient
+    from custom_components.soyal_access.transport import Transport
 
     connections = 0
     requests = asyncio.Queue()
@@ -692,30 +692,32 @@ async def test_persistent_monitor_without_control(hass):
         async def fast_sleep(seconds):
             await original_sleep(0.02 if seconds == 15 else seconds)
 
-        with patch("custom_components.soyal_access.gateway.asyncio.sleep", fast_sleep):
-            manager._monitor_task.cancel()
-            await asyncio.gather(manager._monitor_task, return_exceptions=True)
+        with patch(
+            "custom_components.soyal_access.coordinator.asyncio.sleep", fast_sleep
+        ):
+            manager.coordinator.task.cancel()
+            await asyncio.gather(manager.coordinator.task, return_exceptions=True)
             manager.start_monitoring()
             for _ in range(4):
                 node, command = await asyncio.wait_for(requests.get(), 2)
                 assert node == 2 and command == b"\x21\x00\x00"
-            assert isinstance(manager._client, SessionClient)
+            assert isinstance(manager.transport, Transport)
             assert connections == 1
-            assert manager.connected
-            assert manager.status[2].reachable
-            assert manager.status[1].reachable is None
+            assert manager.coordinator.connected
+            assert manager.coordinator.status[2].reachable
+            assert manager.coordinator.status[1].reachable is None
             writers[0].close()
             await writers[0].wait_closed()
             for _ in range(2):
                 await asyncio.wait_for(requests.get(), 2)
             assert connections == 2
-            assert not manager.enabled
+            assert not manager.control.enabled
             assert await hass.config_entries.async_unload(entry.entry_id)
-            assert not manager.connected
+            assert not manager.coordinator.connected
 
 
 async def test_session_monitor_control_interleaving_and_late_reply(hass):
-    from custom_components.soyal_access.gateway import _CONTROL_21_REPLY
+    from custom_components.soyal_access.transport import IO_REPLY
 
     gateway = SimulatedGateway()
     async with gateway.listen() as port:
@@ -723,21 +725,21 @@ async def test_session_monitor_control_interleaving_and_late_reply(hass):
             hass, port=port, enable_control=True, timeout=0.1, reconnect_delay=0
         )
         manager = entry.runtime_data
-        client = manager._client
+        client = manager.transport
         gateway.responses.put_nowait((io_reply(1),))
-        reply = await client.transact(Frame(1, 0x21, b"\x00\x00"), _CONTROL_21_REPLY)
+        reply = await client.transact(Frame(1, 0x21, b"\x00\x00"), IO_REPLY)
         assert reply.source == 1
         assert gateway.requests.get_nowait().node == 1
         gateway.responses.put_nowait(None)
         with pytest.raises(HomeAssistantError, match="uncertain"):
-            await manager.control(1, 0x84)
+            await manager.control.execute(1, 0x84)
         assert gateway.requests.get_nowait().node == 1
         gateway.responses.put_nowait((io_reply(1) + io_reply(2),))
-        await manager.control(2, 0x82)
+        await manager.control.execute(2, 0x82)
         assert gateway.requests.get_nowait().node == 2
-        assert manager.uncertain == {1}
+        assert manager.control.uncertain == {1}
         with pytest.raises(HomeAssistantError, match="blocked"):
-            await manager.control(1, 0x83)
+            await manager.control.execute(1, 0x83)
         assert gateway.requests.empty()
 
 
@@ -745,12 +747,12 @@ async def test_session_monitor_control_interleaving_and_late_reply(hass):
 def enable_simulated_preview(monkeypatch):
     from functools import partial
 
-    from custom_components.soyal_access import gateway
+    from custom_components.soyal_access import hub
 
     monkeypatch.setattr(
-        gateway,
-        "GatewayManager",
-        partial(gateway.GatewayManager, simulate_preview=True),
+        hub,
+        "Hub",
+        partial(hub.Hub, simulate_preview=True),
     )
 
 
@@ -781,18 +783,18 @@ async def test_node02_readonly_event_head_deduplication(hass, enable_simulated_p
         assert len(page["rows"]) == 1
         assert page["rows"][0]["user_address"] == 20
         assert page["rows"][0]["controller_time"] == "2026-11-01T03:04:05"
-        assert manager.event_duplicates == 1
+        assert manager.preview.duplicates == 1
         diagnostics = await async_get_config_entry_diagnostics(hass, entry)
         assert diagnostics["transactions"] == 2
-        assert manager.event_poll_status == "duplicate_head"
-        assert manager.event_preview_attempts == 2
+        assert manager.preview.status == "duplicate_head"
+        assert manager.preview.attempts == 2
         assert entry.data["node02_event_preview"] is False
         await asyncio.sleep(0.55)
         assert gateway.requests.empty()
         assert await hass.config_entries.async_reload(entry.entry_id)
         await hass.async_block_till_done()
         await asyncio.sleep(0.55)
-        assert entry.runtime_data.event_poll_status == "disabled"
+        assert entry.runtime_data.preview.status == "disabled"
         assert gateway.requests.empty()
 
 
@@ -821,16 +823,16 @@ async def test_preview_reply_classification_and_control(
         manager = entry.runtime_data
         assert await asyncio.wait_for(gateway.requests.get(), 2) == Frame(2, 0x25)
         await asyncio.sleep(0.05)
-        assert manager.event_poll_status == result
-        assert manager.event_preview_attempts == 1
+        assert manager.preview.status == result
+        assert manager.preview.attempts == 1
         if result.startswith("query_failed"):
-            assert manager.uncertain == {2}
+            assert manager.control.uncertain == {2}
             with pytest.raises(HomeAssistantError, match="blocked"):
-                await manager.control(2, 0x84)
+                await manager.control.execute(2, 0x84)
         else:
-            assert not manager.uncertain
+            assert not manager.control.uncertain
             gateway.responses.put_nowait((io_reply(2),))
-            await manager.control(2, 0x84)
+            await manager.control.execute(2, 0x84)
             assert gateway.requests.get_nowait() == Frame(2, 0x21, b"\x84")
         await asyncio.sleep(0.55)
         assert gateway.requests.empty()
@@ -844,7 +846,7 @@ async def test_preview_disabled_by_default_and_one_read_limit(
         entry = await setup_gateway(hass, port=port, stations="2")
         await asyncio.sleep(0.55)
         assert gateway.requests.empty()
-        assert entry.runtime_data.event_poll_status == "disabled"
+        assert entry.runtime_data.preview.status == "disabled"
         assert await hass.config_entries.async_unload(entry.entry_id)
         hass.config_entries.async_update_entry(
             entry, data=dict(entry.data) | {"node02_event_preview": True}
@@ -856,8 +858,8 @@ async def test_preview_disabled_by_default_and_one_read_limit(
         assert await hass.config_entries.async_setup(entry.entry_id)
         assert await asyncio.wait_for(gateway.requests.get(), 2) == Frame(2, 0x25)
         await asyncio.sleep(0.55)
-        assert entry.runtime_data.event_poll_status == "oldest_event_saved"
-        assert entry.runtime_data.event_preview_attempts == 1
+        assert entry.runtime_data.preview.status == "oldest_event_saved"
+        assert entry.runtime_data.preview.attempts == 1
         assert gateway.requests.empty()
         gateway.responses.put_nowait((io_reply(2),))
         # Reconfigure enabling control should preserve the saved queue head.
@@ -865,7 +867,7 @@ async def test_preview_disabled_by_default_and_one_read_limit(
             entry, data=dict(entry.data) | {"enable_control": True}
         )
         assert await hass.config_entries.async_reload(entry.entry_id)
-        await entry.runtime_data.control(2, 0x84)
+        await entry.runtime_data.control.execute(2, 0x84)
         assert gateway.requests.get_nowait() == Frame(2, 0x21, b"\x84")
 
 
@@ -875,7 +877,7 @@ async def test_event_preview_preserves_control_quarantine(
     gateway = SimulatedGateway()
     async with gateway.listen() as port:
         with patch(
-            "custom_components.soyal_access.gateway.Store.async_load",
+            "custom_components.soyal_access.control.Store.async_load",
             new=AsyncMock(return_value={"uncertain": [2]}),
         ):
             entry = await setup_gateway(
@@ -887,10 +889,10 @@ async def test_event_preview_preserves_control_quarantine(
                 node02_event_limit=5,
             )
         await asyncio.sleep(0.55)
-        assert entry.runtime_data.event_poll_status == "uncertain"
-        assert entry.runtime_data.event_preview_attempts == 0
+        assert entry.runtime_data.preview.status == "uncertain"
+        assert entry.runtime_data.preview.attempts == 0
         with pytest.raises(HomeAssistantError, match="blocked"):
-            await entry.runtime_data.control(2, 0x84)
+            await entry.runtime_data.control.execute(2, 0x84)
         assert gateway.requests.empty()
 
 
@@ -901,9 +903,9 @@ async def test_stale_preview_flag_is_ignored_in_production(hass):
             hass, port=port, stations="2", node02_event_preview=True
         )
         manager = entry.runtime_data
-        assert not manager.event_preview_enabled
-        assert manager._event_task is None
-        assert (0x25, b"") not in manager._client._allowed
+        assert not manager.preview.enabled
+        assert manager.preview.task is None
+        assert (0x25, b"") not in manager.transport._allowed
 
 
 async def test_recovery_requires_preparation_and_clears_only_target(
@@ -915,15 +917,15 @@ async def test_recovery_requires_preparation_and_clears_only_target(
             hass, port=port, stations="1,2", enable_control=True
         )
         manager = entry.runtime_data
-        manager.uncertain.update({1, 2})
-        await manager._save()
+        manager.control.uncertain.update({1, 2})
+        await manager.control._save()
         with pytest.raises(HomeAssistantError, match="Prepare"):
-            await manager.confirm_recovery(2)
-        assert await manager.prepare_recovery(2) == "legacy_unknown"
-        assert manager._monitor_task.done()
-        assert manager.control_block_reason(1) == "recovery_paused"
+            await manager.control.confirm_recovery(2)
+        assert await manager.control.prepare_recovery(2) == "legacy_unknown"
+        assert manager.coordinator.task.done()
+        assert manager.control.control_block_reason(1) == "recovery_paused"
         with pytest.raises(HomeAssistantError, match="Prepare"):
-            await manager.confirm_recovery(1)
+            await manager.control.confirm_recovery(1)
         admin = await hass_ws_client()
         command = {
             "type": "soyal_access/recover_station",
@@ -937,6 +939,33 @@ async def test_recovery_requires_preparation_and_clears_only_target(
             command | {"drain_evidence": "Simulated drain verification record"}
         )
         assert (await admin.receive_json())["success"]
-        assert manager.uncertain == {1}
+        assert manager.control.uncertain == {1}
         assert gateway.requests.empty()
-        assert (await manager._store.async_load())["uncertain"] == [1]
+        assert (await manager.control._store.async_load())["uncertain"] == [1]
+
+
+async def test_control_priority_over_health_poll(hass):
+    gateway = SimulatedGateway(persistent=True)
+    async with gateway.listen() as port:
+        entry = await setup_gateway(hass, port=port, enable_control=True)
+        hub = entry.runtime_data
+        first = asyncio.create_task(hub.control.execute(1, 0x84))
+        assert await asyncio.wait_for(gateway.requests.get(), 1) == Frame(
+            1, 0x21, b"\x84"
+        )
+        second = asyncio.create_task(hub.control.execute(2, 0x82))
+        await asyncio.sleep(0)
+        assert hub.transport.waiting == 1
+        await hub.coordinator.poll_once(hub.transport, hub.control)
+        gateway.responses.put_nowait((io_reply(1),))
+        assert await asyncio.wait_for(gateway.requests.get(), 1) == Frame(
+            2, 0x21, b"\x82"
+        )
+        gateway.responses.put_nowait((io_reply(2),))
+        await asyncio.gather(first, second)
+        assert gateway.requests.empty()
+
+        gateway.responses.put_nowait((io_reply(2),))
+        await hub.coordinator.poll_once(hub.transport, hub.control)
+        assert gateway.requests.get_nowait() == Frame(2, 0x21, b"\x00\x00")
+        assert not hub.control.uncertain

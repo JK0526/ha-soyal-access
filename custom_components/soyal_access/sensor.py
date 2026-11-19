@@ -57,19 +57,19 @@ class DiagnosticSensor(SoyalEntity, SensorEntity):
 class QueueDepth(DiagnosticSensor):
     @property
     def native_value(self):
-        return self.manager.waiting
+        return self.manager.transport.waiting
 
     @property
     def extra_state_attributes(self):
-        return {"in_flight": self.manager.active}
+        return {"in_flight": self.manager.transport.active}
 
 
 class ErrorCount(DiagnosticSensor):
     @property
     def native_value(self):
         if self.station is None:
-            return self.manager.errors
-        return self.manager.status[self.station].errors
+            return self.manager.coordinator.errors
+        return self.manager.coordinator.status[self.station].errors
 
 
 class LastResponse(DiagnosticSensor):
@@ -77,7 +77,7 @@ class LastResponse(DiagnosticSensor):
 
     @property
     def native_value(self):
-        return self.manager.status[self.station].last_response
+        return self.manager.coordinator.status[self.station].last_response
 
 
 class Outcome(DiagnosticSensor):
@@ -95,11 +95,15 @@ class Outcome(DiagnosticSensor):
 
     @property
     def extra_state_attributes(self):
-        return {"control_block_reason": self.manager.control_block_reason(self.station)}
+        return {
+            "control_block_reason": self.manager.control.control_block_reason(
+                self.station
+            )
+        }
 
     @property
     def native_value(self):
-        status = self.manager.status[self.station]
-        if status.outcome == "idle" and self.station in self.manager.uncertain:
+        status = self.manager.coordinator.status[self.station]
+        if status.outcome == "idle" and self.station in self.manager.control.uncertain:
             return "uncertain"
         return status.outcome

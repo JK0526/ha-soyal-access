@@ -17,7 +17,7 @@ class HoldSwitch(ControlEntity, SwitchEntity):
     _attr_is_on = None
 
     async def async_turn_on(self, **kwargs):
-        await self.manager.control(self.station, 0x82)
+        await self.manager.control.execute(self.station, 0x82)
 
     async def async_turn_off(self, **kwargs):
-        await self.manager.control(self.station, 0x83)
+        await self.manager.control.execute(self.station, 0x83)

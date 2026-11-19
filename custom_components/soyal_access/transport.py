@@ -1,13 +1,16 @@
 """Persistent stream with one in-flight transaction and strict source matching."""
 
 import asyncio
+from contextlib import asynccontextmanager
 from time import monotonic
 
 from .client import BusClient
-from .protocol import FrameBuffer, encode
+from .protocol import FrameBuffer, ReplyFormat, encode
+
+IO_REPLY = ReplyFormat(frozenset({0x03}), exact_data_size=4)
 
 
-class SessionClient(BusClient):
+class Transport(BusClient):
     """Reuse the verified codec and quarantine across TCP reconnections."""
 
     def __init__(
@@ -38,8 +41,35 @@ class SessionClient(BusClient):
         self._reader_task = None
         self._writer = None
         self._pending = None
+        self.operation_lock = asyncio.Lock()
+        self.waiting = 0
+        self.active = False
         self.transaction_count = 0
         self.transaction_seconds = 0.0
+
+    @asynccontextmanager
+    async def control_slot(self, notify):
+        """Serialize control from durable intent through confirmed outcome."""
+        self.waiting += 1
+        notify()
+        try:
+            await self.operation_lock.acquire()
+        finally:
+            self.waiting -= 1
+            notify()
+        try:
+            yield
+        finally:
+            self.operation_lock.release()
+
+    @asynccontextmanager
+    async def background_slot(self):
+        """Skip this round if a control is queued or the bus is busy."""
+        if self.waiting or self.operation_lock.locked():
+            yield False
+            return
+        async with self.operation_lock:
+            yield True
 
     async def _disconnect(self):
         if self._writer is not None:
@@ -93,6 +123,7 @@ class SessionClient(BusClient):
 
     async def _exchange(self, request, reply_format):
         started = monotonic()
+        future = None
         try:
             async with asyncio.timeout(self._timeout):
                 await self._connect()
@@ -112,6 +143,11 @@ class SessionClient(BusClient):
             self.transaction_count += 1
             self.transaction_seconds += monotonic() - started
             self._pending = None
+            if future is not None:
+                if not future.done():
+                    future.cancel()
+                elif not future.cancelled():
+                    future.exception()
 
     async def close(self):
         await super().close()

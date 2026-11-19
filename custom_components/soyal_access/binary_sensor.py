@@ -26,13 +26,13 @@ class GatewayLink(SoyalEntity, BinarySensorEntity):
 
     @property
     def is_on(self):
-        return self.manager.connected
+        return self.manager.coordinator.connected
 
 
 class StationLink(GatewayLink):
     @property
     def is_on(self):
-        return self.manager.status[self.station].reachable
+        return self.manager.coordinator.status[self.station].reachable
 
 
 class Uncertain(SoyalEntity, BinarySensorEntity):
@@ -41,6 +41,6 @@ class Uncertain(SoyalEntity, BinarySensorEntity):
     @property
     def is_on(self):
         return (
-            self.station in self.manager.uncertain
-            and self.manager.status[self.station].outcome != "pending"
+            self.station in self.manager.control.uncertain
+            and self.manager.coordinator.status[self.station].outcome != "pending"
         )

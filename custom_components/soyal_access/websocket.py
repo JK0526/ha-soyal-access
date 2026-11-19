@@ -203,17 +203,17 @@ async def recover_station(hass, connection, msg):
     ):
         connection.send_error(msg["id"], "not_found", "Gateway is unavailable")
         return
-    manager = entry.runtime_data
+    control = entry.runtime_data.control
     try:
         if msg["step"] == "prepare":
-            kind = await manager.prepare_recovery(msg["station"])
+            kind = await control.prepare_recovery(msg["station"])
             result = {"paused": True, "pending_kind": kind}
         else:
             if "drain_evidence" not in msg:
                 raise HomeAssistantError(
                     "Verified Gateway and RS485 drain evidence is required"
                 )
-            await manager.confirm_recovery(msg["station"])
+            await control.confirm_recovery(msg["station"])
             result = {"paused": True, "reload_required": True}
     except (OSError, HomeAssistantError):
         connection.send_error(

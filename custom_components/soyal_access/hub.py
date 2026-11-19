@@ -44,7 +44,7 @@ class Hub:
         self._fifo_waiting = False
         self.fifo_storage = SyncStorage(hass, entry)
         self.fifo_operation = asyncio.Lock()
-        self.fifo_sync = FifoSync(hass, entry, self, self.fifo_storage)
+        self.fifo_sync = FifoSync(self, self.fifo_storage)
         self.fifo_result = "not_queried"
         self.fifo_attributes = {}
         self._transaction = asyncio.Lock()

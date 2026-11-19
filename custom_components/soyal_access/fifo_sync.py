@@ -13,7 +13,6 @@ from .protocol import ProtocolError, encode
 from .transport import NotSentError
 
 _LOGGER = logging.getLogger(__name__)
-ENABLE_KEY = "fifo_auto_sync"
 IDLE_DELAY = 1.0
 EVENT_DELAY = 0.2
 
@@ -27,16 +26,16 @@ class FifoReadProtocolError(ProtocolError):
 
 
 class FifoSync:
-    def __init__(self, hass, entry, hub, storage):
-        self.hass = hass
-        self.entry = entry
+    def __init__(self, hub, storage):
         self.hub = hub
         self.storage = storage
         self.task = None
         self._single_task = None
         self._last_single = {}
         self._wake = asyncio.Event()
-        self.state = "idle" if self.enabled else "disabled"
+        # A previous load may have failed to persist its safety pause.
+        self._enabled = False
+        self.state = "disabled"
         self.attributes = {}
         self._advance_candidate = None
         self._pause_reason = None
@@ -44,7 +43,7 @@ class FifoSync:
 
     @property
     def enabled(self):
-        return self.entry.data.get(ENABLE_KEY) is True
+        return self._enabled
 
     def set_enabled(self, enabled):
         if self._single_task is not None:
@@ -52,9 +51,7 @@ class FifoSync:
                 raise HomeAssistantError("Single FIFO synchronization is running")
             return
         self._advance_candidate = None
-        self.hass.config_entries.async_update_entry(
-            self.entry, data={**self.entry.data, ENABLE_KEY: enabled}
-        )
+        self._enabled = enabled
         self._wake.set()
         if not enabled or self.state == "disabled":
             self._report("idle" if enabled else "disabled")

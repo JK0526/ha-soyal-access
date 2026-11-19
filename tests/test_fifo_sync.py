@@ -7,7 +7,6 @@ import pytest
 from homeassistant.helpers import entity_registry as er
 
 from custom_components.soyal_access.const import DOMAIN
-from custom_components.soyal_access.fifo_sync import ENABLE_KEY
 from tests.test_fifo import ACK, FIFO, synthetic_event
 from tests.test_ha import next_item, setup_entry
 from tests.test_stage5 import IO, NACK, POLL, eventually, gateway, send, validate
@@ -81,7 +80,7 @@ async def test_sync_disabled_empty_nack_identical_heads_and_legacy_migration(
         await hub.fifo_storage.save(observation())
         await no_commands(writer, requests)
         await toggle(hass, entry, True)
-        assert entry.data[ENABLE_KEY] is True
+        assert hub.fifo_sync.enabled
         await read_head(writer, requests, ACK)
         await read_head(writer, requests, NACK)
         await eventually(lambda: hub.fifo_sync.state == "paused")
@@ -223,6 +222,10 @@ async def test_unconfirmed_removal_is_never_replayed(hass, tmp_path, loss):
             writer, requests, _ = await next_item(connections)
             hub = entry.runtime_data
             await validate(hub, writer, requests)
+            if loss == "reload_after_send":
+                assert not hub.fifo_sync.enabled
+                await no_commands(writer, requests)
+                await toggle(hass, entry, True)
         else:
             await eventually(lambda: hub.fifo_sync.state == "pop_uncertain")
 
@@ -558,3 +561,61 @@ async def test_auto_fifo_protocol_pause_survives_reload(hass, tmp_path, pending_
         await toggle(hass, entry, True)
         await read_head(writer, requests, ACK)
         await read_head(writer, requests, ACK)
+
+
+@pytest.mark.parametrize("restart", [False, True])
+async def test_pause_commit_failure_requires_fresh_enable(
+    hass, tmp_path, monkeypatch, restart
+):
+    hass.config.config_dir = str(tmp_path)
+    async with gateway(allow_fifo=True, allow_pop=True) as (port, connections):
+        entry = await setup_entry(hass, port, timeout=0.35)
+        # Simulate a persisted ON setting from an older version.
+        hass.config_entries.async_update_entry(
+            entry, data={**entry.data, "fifo_auto_sync": True}
+        )
+        hub = entry.runtime_data
+        writer, requests, closed = await next_item(connections)
+        await validate(hub, writer, requests)
+        await toggle(hass, entry, True)
+        event_id = await expect_saved_pop(hub, writer, requests, synthetic_event())
+        await asyncio.wait_for(closed.wait(), 2)
+        writer, requests, closed = await next_item(connections)
+        await validate(hub, writer, requests)
+
+        async def fail_pause(reason):
+            raise sqlite3.OperationalError("simulated pause commit failure")
+
+        monkeypatch.setattr(hub.fifo_storage, "set_pause", fail_pause)
+        await read_head(writer, requests, FIELD_POP_ACK)
+        await eventually(
+            lambda: (
+                hub.fifo_sync.attributes.get("last_error_type") == "pause_storage_error"
+            )
+        )
+        assert await hub.fifo_storage.pause_reason() is None
+        if restart:
+            # Cold entry startup with a new Hub, using only on-disk state.
+            assert await hass.config_entries.async_unload(entry.entry_id)
+            assert await hass.config_entries.async_setup(entry.entry_id)
+        else:
+            assert await hass.config_entries.async_reload(entry.entry_id)
+
+        hub = entry.runtime_data
+        writer, requests, _ = await next_item(connections)
+        await validate(hub, writer, requests)
+        assert not hub.fifo_sync.enabled
+        assert hub.can_pulse
+        await no_commands(writer, requests)
+        await hass.services.async_call(
+            DOMAIN,
+            "clear_fifo_pause",
+            {"entry_id": entry.entry_id, "verified": True},
+            blocking=True,
+        )
+        assert (await hub.fifo_storage.progress())[:2] == (event_id, "pop_uncertain")
+        await no_commands(writer, requests)
+        await toggle(hass, entry, True)
+        await read_head(writer, requests, synthetic_event())
+        await read_head(writer, requests, ACK)
+        assert (await hub.fifo_storage.progress())[:2] == (event_id, "pop_uncertain")

@@ -2,6 +2,12 @@
 
 版本來源為 [manifest.json](custom_components/soyal_access/manifest.json)。Git Tag 使用 `v` 前綴。預發佈使用 Semantic Versioning 的 `-beta.N` 或 `-rc.N`，正式版使用不帶預發佈後綴的版本。
 
+## v0.7.0-beta.10
+
+- Stage 8A 驗收版。手動讀到的有效 FIFO 事件提交到各 Config Entry 的本機 SQLite。
+- 相同 Entry、Node、原始封包 SHA-256 合併為同一筆觀察，累計讀取次數。FIFO 讀取結果另顯示 `saved`、`already_saved` 或 `error`。
+- 本版沒有自動同步或 FIFO 移除。SQLite 路徑與停機備份、還原步驟見 README。
+
 ## v0.7.0-beta.9
 
 - Stage 7 現場驗收版。新增 Node 02 FIFO 最舊事件手動讀取、事件解析與 FIFO 查詢結果感測器。

@@ -7,6 +7,7 @@ from time import monotonic
 from .protocol import HEADER, Frame, ProtocolError, decode, encode
 
 _FIFO = encode(Frame(2, 0x25))
+_POP = encode(Frame(2, 0x37))
 _QUERY = encode(Frame(2, 0x21, b"\x00\x00"))
 _CONTROLS = {code: encode(Frame(2, 0x21, bytes([code]))) for code in (0x82, 0x83, 0x84)}
 
@@ -28,6 +29,7 @@ class Transport:
         self._receiver = None
         self._writer = None
         self.connected = False
+        self.session_id = 0
         self.pending = None
         self.tainted = False
         self._expected = {9: (3,)}
@@ -46,6 +48,7 @@ class Transport:
             except OSError as err:
                 _LOGGER.warning("Gateway TCP connection failed: %s", err)
                 return
+            self.session_id += 1
             self.tainted = False
             self._writer = writer
             self._receiver = asyncio.create_task(
@@ -113,6 +116,10 @@ class Transport:
     async def read_oldest_event(self):
         _, frame = await self._exchange(_FIFO, expected={5: (4, 5), 29: None})
         return frame
+
+    async def pop_oldest_event(self):
+        _, frame = await self._exchange(_POP, expected={5: (4, 5), 10: (4, 5)})
+        return frame.code
 
     async def _exchange(self, packet, *, expected):
         if (

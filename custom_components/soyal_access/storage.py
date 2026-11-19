@@ -20,10 +20,13 @@ class FifoStorage:
         self._closed = False
 
     async def save(self, event):
+        return await self._run(self._save, event)
+
+    async def _run(self, operation, *args):
         async with self._lock:
             if self._closed:
                 raise sqlite3.ProgrammingError("FIFO storage is closed")
-            job = self._hass.async_add_executor_job(self._save, event)
+            job = self._hass.async_add_executor_job(operation, *args)
             try:
                 return await asyncio.shield(job)
             except asyncio.CancelledError:
@@ -36,10 +39,13 @@ class FifoStorage:
         async with self._lock:
             pass
 
-    def _save(self, event):
+    def _prepare_file(self):
         self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         with suppress(FileExistsError):
             self.path.touch(mode=0o600, exist_ok=False)
+
+    def _save(self, event):
+        self._prepare_file()
         raw = bytes.fromhex(event["raw_frame_hex"])
         seen = event["read_at"]
 

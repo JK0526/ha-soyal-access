@@ -13,8 +13,9 @@ from homeassistant.util import dt as dt_util
 
 from .const import DEFAULT_TIMEOUT, DOMAIN
 from .fifo import parse_event
+from .fifo_sync import FifoSync
 from .protocol import ProtocolError
-from .storage import FifoStorage
+from .sync_storage import SyncStorage
 from .transport import NotSentError, Transport
 
 _LOGGER = logging.getLogger(__name__)
@@ -41,7 +42,9 @@ class Hub:
         self.busy = False
         self.fifo_pending = False
         self._fifo_waiting = False
-        self.fifo_storage = FifoStorage(hass, entry.entry_id)
+        self.fifo_storage = SyncStorage(hass, entry)
+        self.fifo_operation = asyncio.Lock()
+        self.fifo_sync = FifoSync(hass, entry, self, self.fifo_storage)
         self.fifo_result = "not_queried"
         self.fifo_attributes = {}
         self._transaction = asyncio.Lock()
@@ -87,6 +90,7 @@ class Hub:
 
     async def stop(self):
         self.stopping = True
+        await self.fifo_sync.stop()
         if self.poll_task is not None:
             self.poll_task.cancel()
             await asyncio.gather(self.poll_task, return_exceptions=True)
@@ -200,6 +204,13 @@ class Hub:
         if not self.can_query or self.fifo_pending:
             raise HomeAssistantError("Node 02 FIFO read was not sent")
         self.fifo_pending = True
+        try:
+            async with self.fifo_operation:
+                await self._read_fifo()
+        finally:
+            self.fifo_pending = False
+
+    async def _read_fifo(self):
         self._fifo_waiting = True
         attributes = {}
         try:
@@ -241,7 +252,6 @@ class Hub:
             result = "communication_failed"
         finally:
             self._fifo_waiting = False
-            self.fifo_pending = False
         self.fifo_result = result
         self.fifo_attributes = attributes
         self.notify()

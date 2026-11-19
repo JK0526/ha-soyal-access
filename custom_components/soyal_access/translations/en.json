@@ -71,11 +71,25 @@
           "invalid_response": "Invalid response",
           "communication_failed": "Communication failed"
         }
+      },
+      "fifo_sync_status": {
+        "name": "FIFO Sync Status",
+        "state": {
+          "disabled": "Disabled",
+          "idle": "Idle",
+          "syncing": "Syncing",
+          "paused": "Paused",
+          "storage_error": "Storage error",
+          "pop_uncertain": "Removal uncertain"
+        }
       }
     },
     "switch": {
       "hold_open": {
         "name": "Hold open"
+      },
+      "fifo_auto_sync": {
+        "name": "FIFO Auto Sync"
       }
     }
   }

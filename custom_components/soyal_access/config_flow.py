@@ -63,8 +63,14 @@ class SoyalConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     for other in self._async_current_entries()
                 ):
                     return self.async_abort(reason="already_configured")
+                updated = dict(entry.data) | data
+                if (entry.data["host"], entry.data["port"]) != (
+                    data["host"],
+                    data["port"],
+                ):
+                    updated["fifo_auto_sync"] = False
                 return self.async_update_reload_and_abort(
-                    entry, unique_id=key, title=key, data=dict(entry.data) | data
+                    entry, unique_id=key, title=key, data=updated
                 )
         return self.async_show_form(
             step_id=step,

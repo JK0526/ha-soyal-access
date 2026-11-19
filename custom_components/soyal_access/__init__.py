@@ -19,6 +19,7 @@ async def async_setup_entry(hass, entry):
         raise
 
     hub.start_polling()
+    hub.fifo_sync.start()
 
     async def stop(_event):
         await hub.stop()

@@ -6,7 +6,11 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
 async def async_setup_entry(hass, entry, async_add_entities):
     async_add_entities(
-        [QueryResult(entry.runtime_data), FifoResult(entry.runtime_data)]
+        [
+            QueryResult(entry.runtime_data),
+            FifoResult(entry.runtime_data),
+            FifoSyncStatus(entry.runtime_data),
+        ]
     )
 
 
@@ -70,3 +74,26 @@ class FifoResult(QueryResult):
     @property
     def extra_state_attributes(self):
         return self._hub.fifo_attributes
+
+
+class FifoSyncStatus(QueryResult):
+    _attr_translation_key = "fifo_sync_status"
+
+    def __init__(self, hub):
+        super().__init__(hub)
+        self._attr_options = [
+            "disabled",
+            "idle",
+            "syncing",
+            "paused",
+            "storage_error",
+            "pop_uncertain",
+        ]
+
+    @property
+    def native_value(self):
+        return self._hub.fifo_sync.state
+
+    @property
+    def extra_state_attributes(self):
+        return self._hub.fifo_sync.attributes

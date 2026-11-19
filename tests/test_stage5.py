@@ -20,7 +20,7 @@ NACK = encode(Frame(0, 5, b"\x02"))
 
 
 @asynccontextmanager
-async def gateway(*, allow_fifo=False):
+async def gateway(*, allow_fifo=False, allow_pop=False):
     connections = asyncio.Queue()
     tasks = set()
 
@@ -36,7 +36,9 @@ async def gateway(*, allow_fifo=False):
                 frame = header + length + await reader.readexactly(length[0])
                 decoded = decode(frame)
                 assert decoded.node == 2
-                if allow_fifo and decoded.code == 0x25:
+                if (allow_fifo and decoded.code == 0x25) or (
+                    allow_pop and decoded.code == 0x37
+                ):
                     assert decoded.payload == b""
                 else:
                     assert decoded.code == 0x21

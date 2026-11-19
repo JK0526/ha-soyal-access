@@ -71,11 +71,25 @@
           "invalid_response": "回應格式錯誤",
           "communication_failed": "通訊失敗"
         }
+      },
+      "fifo_sync_status": {
+        "name": "FIFO 同步狀態",
+        "state": {
+          "disabled": "已停用",
+          "idle": "閒置",
+          "syncing": "同步中",
+          "paused": "已暫停",
+          "storage_error": "儲存錯誤",
+          "pop_uncertain": "移除待確認"
+        }
       }
     },
     "switch": {
       "hold_open": {
         "name": "常開"
+      },
+      "fifo_auto_sync": {
+        "name": "FIFO 自動同步"
       }
     }
   }

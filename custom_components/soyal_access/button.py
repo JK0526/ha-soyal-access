@@ -5,7 +5,9 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
-    async_add_entities([QueryButton(entry.runtime_data)])
+    async_add_entities(
+        [QueryButton(entry.runtime_data), PulseButton(entry.runtime_data)]
+    )
 
 
 class QueryButton(ButtonEntity):
@@ -15,7 +17,7 @@ class QueryButton(ButtonEntity):
     def __init__(self, hub):
         self._hub = hub
         self._attr_device_info = hub.node_device
-        self._attr_unique_id = f"{hub.entry_id}:2:manual_query"
+        self._attr_unique_id = f"{hub.entry_id}:2:{self._attr_translation_key}"
 
     @property
     def available(self):
@@ -30,3 +32,14 @@ class QueryButton(ButtonEntity):
 
     async def async_press(self):
         await self._hub.query()
+
+
+class PulseButton(QueryButton):
+    _attr_translation_key = "pulse_open"
+
+    @property
+    def available(self):
+        return self._hub.can_pulse
+
+    async def async_press(self):
+        await self._hub.pulse()

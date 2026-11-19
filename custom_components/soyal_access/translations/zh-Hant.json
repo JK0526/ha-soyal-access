@@ -35,6 +35,9 @@
     "button": {
       "manual_query": {
         "name": "手動查詢"
+      },
+      "pulse_open": {
+        "name": "脈衝開門"
       }
     },
     "sensor": {
@@ -60,6 +63,18 @@
         },
         "verified_safe": {
           "name": "已查核排空證據"
+        }
+      }
+    },
+    "confirm_node02_pulse": {
+      "name": "確認 Node 02 脈衝開門安全",
+      "description": "查核舊回應排空並確認現場門禁安全後，啟用當次載入的脈衝開門。",
+      "fields": {
+        "entry_id": {
+          "name": "SOYAL 整合"
+        },
+        "verified_safe": {
+          "name": "已確認排空與門禁安全"
         }
       }
     }

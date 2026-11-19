@@ -8,4 +8,15 @@ confirm_node02_query:
     verified_safe:
       required: true
       selector:
-        boolean:
+        boolean: {}
+confirm_node02_pulse:
+  fields:
+    entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: soyal_access
+    verified_safe:
+      required: true
+      selector:
+        boolean: {}

@@ -35,6 +35,9 @@
     "button": {
       "manual_query": {
         "name": "Manual query"
+      },
+      "pulse_open": {
+        "name": "Pulse open"
       }
     },
     "sensor": {
@@ -60,6 +63,18 @@
         },
         "verified_safe": {
           "name": "Drain evidence verified"
+        }
+      }
+    },
+    "confirm_node02_pulse": {
+      "name": "Confirm Node 02 pulse safety",
+      "description": "Enable pulse open for this load after verifying the drain and site safety.",
+      "fields": {
+        "entry_id": {
+          "name": "SOYAL entry"
+        },
+        "verified_safe": {
+          "name": "Drain and door safety verified"
         }
       }
     }

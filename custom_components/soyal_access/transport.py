@@ -1,4 +1,4 @@
-"""One TCP connection and one optional read-only transaction per loaded config entry."""
+"""One TCP connection and one in-flight transaction per loaded config entry."""
 
 import asyncio
 import logging
@@ -7,6 +7,12 @@ from time import monotonic
 from .protocol import HEADER, Frame, ProtocolError, decode, encode
 
 _QUERY = encode(Frame(2, 0x21, b"\x00\x00"))
+_PULSE = encode(Frame(2, 0x21, b"\x84"))
+
+
+class NotSentError(ConnectionError):
+    """The transaction was rejected before any socket write."""
+
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -23,10 +29,11 @@ class Transport:
         self.connected = False
         self.pending = None
         self.tainted = False
+        self._pulse_pending = False
 
     async def start(self):
         async with self._lifecycle:
-            if self._receiver is not None:
+            if self._receiver is not None or self.tainted:
                 return
             try:
                 async with asyncio.timeout(self._timeout):
@@ -53,15 +60,19 @@ class Transport:
                     self._link_changed()
                     continue
                 buffer.extend(chunk)
-                if buffer[0] != HEADER or (len(buffer) >= 2 and buffer[1] != 9):
+                lengths = (5, 9) if self._pulse_pending else (9,)
+                if buffer[0] != HEADER or (
+                    len(buffer) >= 2 and buffer[1] not in lengths
+                ):
                     raise ProtocolError("Unexpected I/O response header or length")
-                if len(buffer) < 11:
+                if len(buffer) < 2 or len(buffer) < buffer[1] + 2:
                     continue
                 frame = decode(buffer)
-                if frame.node != 0 or frame.code != 3 or frame.payload[0] != 2:
+                codes = {5: (4, 5), 9: (3,)}[buffer[1]]
+                if frame.node != 0 or frame.code not in codes or frame.payload[0] != 2:
                     raise ProtocolError("Unexpected I/O response type or source")
                 buffer.clear()
-                pending.set_result(monotonic())
+                pending.set_result((monotonic(), frame.code))
         except (OSError, ProtocolError) as err:
             if self.pending is not None and not self.pending.done():
                 self.pending.set_exception(err)
@@ -77,17 +88,33 @@ class Transport:
             self._set_disconnected()
 
     async def query_node02(self):
-        if not self.connected or self.tainted or self.pending is not None:
-            raise ConnectionError("Gateway cannot accept a query")
+        elapsed, _ = await self._exchange(_QUERY)
+        return elapsed
+
+    async def pulse_node02(self):
+        _, code = await self._exchange(_PULSE)
+        return code
+
+    async def _exchange(self, packet):
+        if (
+            not self.connected
+            or self._writer is None
+            or self._writer.is_closing()
+            or self.tainted
+            or self.pending is not None
+        ):
+            raise NotSentError("Gateway cannot accept a transaction")
         future = asyncio.get_running_loop().create_future()
+        self._pulse_pending = packet is _PULSE
         self.pending = future
         started = monotonic()
         try:
             async with asyncio.timeout(self._timeout):
-                self._writer.write(_QUERY)
+                self._writer.write(packet)
                 await self._writer.drain()
-                return await future - started
-        except (OSError, ProtocolError, asyncio.CancelledError):
+                received, code = await future
+                return received - started, code
+        except (TimeoutError, OSError, ProtocolError, asyncio.CancelledError):
             self.tainted = True
             await self.close()
             raise

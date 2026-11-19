@@ -214,9 +214,16 @@ async def test_legacy_entry_registry_and_disk_are_preserved(hass, tmp_path):
         await hass.async_block_till_done()
         await next_item(connections)
         assert dict(entry.data) == data
+        with pytest.raises(HomeAssistantError, match="Legacy uncertainty"):
+            await entry.runtime_data.confirm_pulse()
         assert tcp_id(hass, entry) == old_tcp.entity_id
         assert entities.async_get(old_tcp.entity_id).device_id == old_gateway.id
-        assert entities.async_get(old_control.entity_id) == old_control
+        assert (
+            entities.async_get_entity_id(
+                "button", DOMAIN, f"{entry.entry_id}:2:pulse_open"
+            )
+            == old_control.entity_id
+        )
         state = hass.states.get(old_control.entity_id)
         assert state is None or state.state == "unavailable"
 
@@ -237,10 +244,13 @@ async def test_legacy_entry_registry_and_disk_are_preserved(hass, tmp_path):
         assert {p: p.read_bytes() for p in original} == original
 
 
+@pytest.mark.parametrize("pulse", [False, True])
 @pytest.mark.parametrize(
     ("response", "expected"),
     [
         ("valid", "success"),
+        ("ack", "success"),
+        ("nack", "rejected"),
         ("source", "invalid_response"),
         ("checksum", "invalid_response"),
         ("coalesced", "invalid_response"),
@@ -253,10 +263,12 @@ async def test_legacy_entry_registry_and_disk_are_preserved(hass, tmp_path):
     ],
 )
 async def test_node02_query(
-    hass, hass_admin_user, hass_read_only_user, response, expected
+    hass, hass_admin_user, hass_read_only_user, response, expected, pulse
 ):
     from custom_components.soyal_access.protocol import Frame, encode
 
+    if not pulse and response in {"ack", "nack"}:
+        expected = "invalid_response"
     requests = asyncio.Queue()
     peers = asyncio.Queue()
 
@@ -300,14 +312,31 @@ async def test_node02_query(
             context=Context(user_id=hass_admin_user.id),
             blocking=True,
         )
+        pulse_button = registry.async_get_entity_id(
+            "button", DOMAIN, f"{entry.entry_id}:2:pulse_open"
+        )
+        assert hass.states.get(pulse_button).state == "unavailable"
+        await hass.services.async_call(
+            DOMAIN,
+            "confirm_node02_pulse",
+            authorization,
+            context=Context(user_id=hass_admin_user.id),
+            blocking=True,
+        )
+        if pulse:
+            button = pulse_button
         task = asyncio.create_task(
             hass.services.async_call(
                 "button", "press", {"entity_id": button}, blocking=True
             )
         )
-        assert await next_item(requests) == bytes.fromhex("7E 06 02 21 00 00 DC FF")
+        tx = "7E 05 02 21 84 58 FF" if pulse else "7E 06 02 21 00 00 DC FF"
+        assert await next_item(requests) == bytes.fromhex(tx)
         with pytest.raises(HomeAssistantError):
             await hub.query()
+        with pytest.raises(HomeAssistantError, match="not sent"):
+            await hub.pulse()
+        assert hass.states.get(button).state != "unavailable"
         raw = encode(Frame(0, 3, b"\x02\x73\x10\x00\x18"))
         match response:
             case "valid":
@@ -315,6 +344,8 @@ async def test_node02_query(
                 await writer.drain()
                 await asyncio.sleep(0.01)
                 writer.write(raw[3:])
+            case "ack" | "nack":
+                writer.write(encode(Frame(0, 4 if response == "ack" else 5, b"\x02")))
             case "source":
                 writer.write(encode(Frame(0, 3, b"\x01" + raw[5:-2])))
             case "checksum":
@@ -333,11 +364,23 @@ async def test_node02_query(
                 writer.close()
             case "disconnect":
                 writer.close()
-        await task
+        if pulse and expected != "success":
+            with pytest.raises(
+                HomeAssistantError,
+                match="rejected" if expected == "rejected" else "outcome unconfirmed",
+            ):
+                await task
+        else:
+            await task
         await hass.async_block_till_done()
         state = hass.states.get(sensor)
-        assert state.state == expected
-        if expected == "success":
+        assert state.state == ("not_queried" if pulse else expected)
+        if pulse:
+            assert hub.can_pulse == (expected == "success")
+            if expected not in {"success", "rejected"}:
+                assert hub.transport.tainted
+                assert hass.states.get(tcp_id(hass, entry)).state == STATE_OFF
+        elif expected == "success":
             assert state.attributes["last_success"]
             assert state.attributes["elapsed_ms"] > 0
             assert hub.can_query
@@ -348,6 +391,7 @@ async def test_node02_query(
             assert hub.result == "success"
         else:
             assert not hub.can_query
+            assert not hub.can_pulse
             assert hass.states.get(tcp_id(hass, entry)).state == STATE_OFF
             with pytest.raises(HomeAssistantError):
                 hub.confirm()

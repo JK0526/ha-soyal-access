@@ -2,6 +2,12 @@
 
 版本來源為 [manifest.json](custom_components/soyal_access/manifest.json)。Git Tag 使用 `v` 前綴。預發佈使用 Semantic Versioning 的 `-beta.N` 或 `-rc.N`，正式版使用不帶預發佈後綴的版本。
 
+## v0.7.0-beta.3
+
+- 新增 Node 02 脈衝開門與獨立的管理員確認。舊版未決封鎖維持有效。
+- 查詢與開門共用單一在途交易。逾時或未決回應關閉 Session，避免舊回應被下一筆控制接收。
+- 驗證匹配的 I/O、ACK 和 NACK。實體門鎖動作仍由現場驗收。
+
 ## v0.7.0-beta.2
 
 - 新增 Node 02 手動唯讀 I/O 查詢，預設停用，須由管理員確認現場排空。

@@ -25,20 +25,24 @@ async def async_setup(hass, config):
             raise HomeAssistantError(
                 "Select a loaded SOYAL entry as a signed-in administrator"
             )
-        entry.runtime_data.confirm()
+        if call.service == "confirm_node02_pulse":
+            await entry.runtime_data.confirm_pulse()
+        else:
+            entry.runtime_data.confirm()
 
-    async_register_admin_service(
-        hass,
-        DOMAIN,
-        "confirm_node02_query",
-        confirm,
-        vol.Schema(
-            {
-                vol.Required("entry_id"): str,
-                vol.Required("verified_safe"): vol.All(bool, vol.In([True])),
-            }
-        ),
-    )
+    for service in ("confirm_node02_query", "confirm_node02_pulse"):
+        async_register_admin_service(
+            hass,
+            DOMAIN,
+            service,
+            confirm,
+            vol.Schema(
+                {
+                    vol.Required("entry_id"): str,
+                    vol.Required("verified_safe"): vol.All(bool, vol.In([True])),
+                }
+            ),
+        )
     return True
 
 

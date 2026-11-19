@@ -629,3 +629,70 @@ async def test_auto_sync_startup_safety(hass, tmp_path, startup):
         else:
             await read_head(writer, requests, ACK)
             await eventually(lambda: hub.fifo_sync.state == "idle")
+
+
+@pytest.mark.parametrize("mode", ["on", "off", "paused", "pop_uncertain"])
+async def test_fifo_sync_sensor_is_live_after_reload(hass, tmp_path, mode):
+    hass.config.config_dir = str(tmp_path)
+    async with gateway(allow_fifo=True, allow_pop=True) as (port, connections):
+        entry = await setup_entry(hass, port, timeout=1)
+        hub = entry.runtime_data
+        await next_item(connections)
+        entity_id = er.async_get(hass).async_get_entity_id(
+            "sensor", DOMAIN, f"{entry.entry_id}:2:fifo_sync_status"
+        )
+        await hub.fifo_storage.set_pause(
+            "fifo_read_protocol_error" if mode == "paused" else None
+        )
+        if mode == "pop_uncertain":
+            event = observation()
+            event_id = await hub.fifo_storage.save_head(event)
+            await hub.fifo_storage.transition(
+                event_id, "saved", "pop_uncertain", event["read_at"]
+            )
+
+        desired = mode != "off"
+        hass.config_entries.async_update_entry(
+            entry, data={**entry.data, "desired_auto_sync": desired}
+        )
+        old_worker = hub.fifo_sync.task
+        assert await hass.config_entries.async_reload(entry.entry_id)
+        await hass.async_block_till_done()
+        assert old_worker.done()
+        hub = entry.runtime_data
+        writer, requests, _ = await next_item(connections)
+
+        def assert_live(expected):
+            state = hass.states.get(entity_id)
+            assert state is not None
+            assert state.state == expected
+            assert not state.attributes.get("restored")
+            assert state.attributes["desired_auto_sync"] is desired
+            assert not hub.fifo_sync.task.done()
+            return state
+
+        assert not hub.can_query
+        if mode == "paused":
+            await eventually(lambda: hub.fifo_sync.state == "paused")
+            assert assert_live("paused").attributes["pause_reason"] == (
+                "fifo_read_protocol_error"
+            )
+        else:
+            assert_live("waiting_for_gateway" if desired else "disabled")
+
+        await validate(hub, writer, requests)
+        if mode == "on":
+            await read_head(writer, requests, ACK)
+            await eventually(lambda: hub.fifo_sync.state == "idle")
+            assert_live("idle")
+        elif mode == "pop_uncertain":
+            await eventually(lambda: hub.fifo_sync.state == "paused")
+            assert assert_live("paused").attributes["pause_reason"] == "pop_uncertain"
+            assert (await hub.fifo_storage.progress())[:2] == (
+                event_id,
+                "pop_uncertain",
+            )
+            await no_commands(writer, requests)
+        else:
+            await no_commands(writer, requests)
+            assert_live("paused" if mode == "paused" else "disabled")

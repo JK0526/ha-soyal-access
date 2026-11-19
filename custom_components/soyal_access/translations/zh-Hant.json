@@ -79,6 +79,7 @@
         "name": "FIFO 同步狀態",
         "state": {
           "disabled": "已停用",
+          "waiting_for_gateway": "等待 Gateway 通訊驗證",
           "idle": "閒置",
           "syncing": "同步中",
           "paused": "已暫停",

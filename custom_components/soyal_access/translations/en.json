@@ -79,6 +79,7 @@
         "name": "FIFO Sync Status",
         "state": {
           "disabled": "Disabled",
+          "waiting_for_gateway": "Waiting for gateway validation",
           "idle": "Idle",
           "syncing": "Syncing",
           "paused": "Paused",

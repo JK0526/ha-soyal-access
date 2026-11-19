@@ -83,6 +83,7 @@ class FifoSyncStatus(QueryResult):
         super().__init__(hub)
         self._attr_options = [
             "disabled",
+            "waiting_for_gateway",
             "idle",
             "syncing",
             "paused",

@@ -2,6 +2,11 @@
 
 版本來源為 [manifest.json](custom_components/soyal_access/manifest.json)。Git Tag 使用 `v` 前綴。預發佈使用 Semantic Versioning 的 `-beta.N` 或 `-rc.N`，正式版使用不帶預發佈後綴的版本。
 
+## v0.7.1-beta.1
+
+- 重新發布 Stage 8A，無功能變更。SQLite Schema、通訊、輪詢與門禁控制沿用 beta.10。
+- 預發行版每個版本使用 beta.1～beta.9。beta.9 之後遞增 Patch，從 beta.1 開始。Git Tag 使用 v 前綴，manifest 不加前綴。發布後核對 GitHub Releases API 的排序，HACS 更新提示由現場 HA 驗證。
+
 ## v0.7.0-beta.10
 
 - Stage 8A 驗收版。手動讀到的有效 FIFO 事件提交到各 Config Entry 的本機 SQLite。

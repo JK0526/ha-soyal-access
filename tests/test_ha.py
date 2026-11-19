@@ -195,6 +195,14 @@ async def test_legacy_entry_registry_and_disk_are_preserved(hass, tmp_path):
             device_id=node.id,
             suggested_object_id="old_control",
         )
+        old_hold = entities.async_get_or_create(
+            "switch",
+            DOMAIN,
+            f"{entry.entry_id}:2:hold_open",
+            config_entry=entry,
+            device_id=node.id,
+            suggested_object_id="old_hold",
+        )
         storage = tmp_path / ".storage"
         storage.mkdir(exist_ok=True)
         key = sha256(repr((data["host"], port)).encode()).hexdigest()
@@ -221,6 +229,13 @@ async def test_legacy_entry_registry_and_disk_are_preserved(hass, tmp_path):
             )
             == old_control.entity_id
         )
+        assert (
+            entities.async_get_entity_id(
+                "switch", DOMAIN, f"{entry.entry_id}:2:hold_open"
+            )
+            == old_hold.entity_id
+        )
+        assert hass.states.get(old_hold.entity_id).state == "unknown"
         state = hass.states.get(old_control.entity_id)
         assert state is not None and state.state != "unavailable"
 
@@ -241,7 +256,15 @@ async def test_legacy_entry_registry_and_disk_are_preserved(hass, tmp_path):
         assert {p: p.read_bytes() for p in original} == original
 
 
-@pytest.mark.parametrize("pulse", [False, True])
+@pytest.mark.parametrize(
+    ("domain", "key", "action", "tx"),
+    [
+        ("button", "manual_query", "press", "7E 06 02 21 00 00 DC FF"),
+        ("button", "pulse_open", "press", "7E 05 02 21 84 58 FF"),
+        ("switch", "hold_open", "turn_on", "7E 05 02 21 82 5E 03"),
+        ("switch", "hold_open", "turn_off", "7E 05 02 21 83 5F 05"),
+    ],
+)
 @pytest.mark.parametrize(
     ("response", "expected"),
     [
@@ -259,10 +282,11 @@ async def test_legacy_entry_registry_and_disk_are_preserved(hass, tmp_path):
         ("disconnect", "communication_failed"),
     ],
 )
-async def test_node02_query(hass, response, expected, pulse):
+async def test_node02_operations(hass, response, expected, domain, key, action, tx):
     from custom_components.soyal_access.protocol import Frame, encode
 
-    if not pulse and response in {"ack", "nack"}:
+    control = key != "manual_query"
+    if not control and response in {"ack", "nack"}:
         expected = "invalid_response"
     requests = asyncio.Queue()
     peers = asyncio.Queue()
@@ -294,20 +318,45 @@ async def test_node02_query(hass, response, expected, pulse):
             "button", DOMAIN, f"{entry.entry_id}:2:pulse_open"
         )
         assert hass.states.get(pulse_button).state != "unavailable"
-        if pulse:
-            button = pulse_button
-        task = asyncio.create_task(
-            hass.services.async_call(
-                "button", "press", {"entity_id": button}, blocking=True
-            )
+        target = registry.async_get_entity_id(
+            domain, DOMAIN, f"{entry.entry_id}:2:{key}"
         )
-        tx = "7E 05 02 21 84 58 FF" if pulse else "7E 06 02 21 00 00 DC FF"
+        hold_switch = registry.async_get_entity_id(
+            "switch", DOMAIN, f"{entry.entry_id}:2:hold_open"
+        )
+        initial = hass.states.get(hold_switch)
+        assert initial.state == "unknown"
+        assert initial.attributes["assumed_state"] is True
+        assert requests.empty()
+
+        async def perform():
+            await hass.services.async_call(
+                domain, action, {"entity_id": target}, blocking=True
+            )
+
+        raw_ack = encode(Frame(0, 4, b"\x02"))
+        # Establish the opposite command before failure cases to verify rejection
+        # retains the last success while an ambiguous outcome clears it.
+        enabled = action == "turn_on"
+        if domain == "switch" and expected != "success":
+            prime = asyncio.create_task(hub.set_hold_open(not enabled))
+            opposite = "7E 05 02 21 83 5F 05" if enabled else "7E 05 02 21 82 5E 03"
+            assert await next_item(requests) == bytes.fromhex(opposite)
+            writer.write(raw_ack)
+            await prime
+            assert hub.hold_open is not enabled
+
+        task = asyncio.create_task(perform())
         assert await next_item(requests) == bytes.fromhex(tx)
-        with pytest.raises(HomeAssistantError):
-            await hub.query()
-        with pytest.raises(HomeAssistantError, match="not sent"):
-            await hub.pulse()
-        assert hass.states.get(button).state != "unavailable"
+        for operation in (
+            hub.query,
+            hub.pulse,
+            lambda: hub.set_hold_open(True),
+            lambda: hub.set_hold_open(False),
+        ):
+            with pytest.raises(HomeAssistantError, match="not sent"):
+                await operation()
+        assert hass.states.get(target).state != "unavailable"
         raw = encode(Frame(0, 3, b"\x02\x73\x10\x00\x18"))
         match response:
             case "valid":
@@ -335,7 +384,7 @@ async def test_node02_query(hass, response, expected, pulse):
                 writer.close()
             case "disconnect":
                 writer.close()
-        if pulse and expected != "success":
+        if control and expected != "success":
             with pytest.raises(
                 HomeAssistantError,
                 match="rejected" if expected == "rejected" else "outcome unconfirmed",
@@ -345,8 +394,8 @@ async def test_node02_query(hass, response, expected, pulse):
             await task
         await hass.async_block_till_done()
         state = hass.states.get(sensor)
-        assert state.state == ("not_queried" if pulse else expected)
-        if pulse:
+        assert state.state == ("not_queried" if control else expected)
+        if control:
             assert hub.can_pulse == (expected in {"success", "rejected"})
             if expected not in {"success", "rejected"}:
                 assert hub.transport.tainted
@@ -364,11 +413,29 @@ async def test_node02_query(hass, response, expected, pulse):
             assert not hub.can_query
             assert not hub.can_pulse
             assert hass.states.get(tcp_id(hass, entry)).state == STATE_OFF
+        if domain == "switch":
+            if expected == "success":
+                assert hub.hold_open is enabled
+                assert hass.states.get(hold_switch).state == (
+                    "on" if enabled else "off"
+                )
+            elif expected == "rejected":
+                assert hub.hold_open is not enabled
+            else:
+                assert hub.hold_open is None
+                assert hass.states.get(hold_switch).state == "unavailable"
         assert requests.empty()
         assert peers.empty()
         assert await hass.config_entries.async_reload(entry.entry_id)
         await hass.async_block_till_done()
         reloaded_peer = await next_item(peers)
+        assert hass.states.get(hold_switch).state == "unknown"
+        assert (
+            registry.async_get_entity_id(
+                "switch", DOMAIN, f"{entry.entry_id}:2:hold_open"
+            )
+            == hold_switch
+        )
         assert hass.states.get(button).state != "unavailable"
         if response == "timeout":
             reloaded = entry.runtime_data

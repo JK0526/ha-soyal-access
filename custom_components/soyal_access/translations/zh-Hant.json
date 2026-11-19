@@ -51,6 +51,11 @@
           "invalid_response": "回應格式錯誤"
         }
       }
+    },
+    "switch": {
+      "hold_open": {
+        "name": "常開"
+      }
     }
   }
 }

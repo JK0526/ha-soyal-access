@@ -1,5 +1,6 @@
 """Own the TCP connection for one Home Assistant config entry."""
 
+import asyncio
 import logging
 from hashlib import sha256
 from pathlib import Path
@@ -32,6 +33,7 @@ class Hub:
         )
         self._hass = hass
         self.busy = False
+        self.hold_open = None
         self.result = "not_queried"
         self.last_success = None
         self.elapsed_ms = None
@@ -86,21 +88,35 @@ class Hub:
         return self.transport.connected and not self.transport.tainted
 
     async def pulse(self):
+        await self._control(0x84, "pulse")
+
+    async def set_hold_open(self, enabled: bool):
+        await self._control(0x82 if enabled else 0x83, "hold open", hold_open=enabled)
+
+    async def _control(self, action, label, *, hold_open=None):
         if not self.can_pulse or self.busy:
             raise HomeAssistantError(
-                "Node 02 pulse was not sent: Gateway unavailable or busy"
+                f"Node 02 {label} was not sent: Gateway unavailable or busy"
             )
         self.busy = True
         try:
-            code = await self.transport.pulse_node02()
+            code = await self.transport.control_node02(action)
             if code == 5:
-                raise HomeAssistantError("Node 02 rejected the pulse (NACK)")
+                raise HomeAssistantError(f"Node 02 rejected the {label} (NACK)")
+            if hold_open is not None:
+                self.hold_open = hold_open
         except NotSentError as err:
-            raise HomeAssistantError("Node 02 pulse was not sent") from err
+            raise HomeAssistantError(f"Node 02 {label} was not sent") from err
         except (TimeoutError, OSError, ProtocolError) as err:
+            if hold_open is not None:
+                self.hold_open = None
             raise HomeAssistantError(
-                f"Node 02 pulse outcome unconfirmed ({type(err).__name__})"
+                f"Node 02 {label} outcome unconfirmed ({type(err).__name__})"
             ) from err
+        except asyncio.CancelledError:
+            if hold_open is not None:
+                self.hold_open = None
+            raise
         finally:
             self.busy = False
             self.notify()

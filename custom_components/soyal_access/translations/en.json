@@ -51,6 +51,11 @@
           "invalid_response": "Invalid response"
         }
       }
+    },
+    "switch": {
+      "hold_open": {
+        "name": "Hold open"
+      }
     }
   }
 }

@@ -7,7 +7,7 @@ from time import monotonic
 from .protocol import HEADER, Frame, ProtocolError, decode, encode
 
 _QUERY = encode(Frame(2, 0x21, b"\x00\x00"))
-_PULSE = encode(Frame(2, 0x21, b"\x84"))
+_CONTROLS = {code: encode(Frame(2, 0x21, bytes([code]))) for code in (0x82, 0x83, 0x84)}
 
 
 class NotSentError(ConnectionError):
@@ -29,7 +29,7 @@ class Transport:
         self.connected = False
         self.pending = None
         self.tainted = False
-        self._pulse_pending = False
+        self._control_pending = False
 
     async def start(self):
         async with self._lifecycle:
@@ -59,7 +59,7 @@ class Transport:
                     self.tainted = True
                     break
                 buffer.extend(chunk)
-                lengths = (5, 9) if self._pulse_pending else (9,)
+                lengths = (5, 9) if self._control_pending else (9,)
                 if buffer[0] != HEADER or (
                     len(buffer) >= 2 and buffer[1] not in lengths
                 ):
@@ -87,14 +87,14 @@ class Transport:
             self._set_disconnected()
 
     async def query_node02(self):
-        elapsed, _ = await self._exchange(_QUERY)
+        elapsed, _ = await self._exchange(_QUERY, control=False)
         return elapsed
 
-    async def pulse_node02(self):
-        _, code = await self._exchange(_PULSE)
+    async def control_node02(self, action):
+        _, code = await self._exchange(_CONTROLS[action], control=True)
         return code
 
-    async def _exchange(self, packet):
+    async def _exchange(self, packet, *, control):
         if (
             not self.connected
             or self._writer is None
@@ -104,7 +104,7 @@ class Transport:
         ):
             raise NotSentError("Gateway cannot accept a transaction")
         future = asyncio.get_running_loop().create_future()
-        self._pulse_pending = packet is _PULSE
+        self._control_pending = control
         self.pending = future
         started = monotonic()
         try:

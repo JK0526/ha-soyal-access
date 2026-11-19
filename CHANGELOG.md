@@ -2,6 +2,12 @@
 
 版本來源為 [manifest.json](custom_components/soyal_access/manifest.json)。Git Tag 使用 `v` 前綴。預發佈使用 Semantic Versioning 的 `-beta.N` 或 `-rc.N`，正式版使用不帶預發佈後綴的版本。
 
+## v0.7.1-beta.4
+
+- FIFO 同步收到無法配對的回應時，將暫停原因保存至 SQLite，停止背景 FIFO 查詢及移除。TCP 重連後，200 ms 輪詢與門禁控制可獨立恢復。
+- 每次 Home Assistant 重啟或重新載入整合，自動同步都回到 OFF。即使上次暫停寫入失敗，也需要重新手動啟用。
+- 管理員可在自動同步關閉時執行 `soyal_access.clear_fifo_pause`。此操作保留未決移除紀錄，也不會發送控制器指令。歸屬不明的 12-byte ACK 仍不解讀為空 FIFO。
+
 ## v0.7.1-beta.3
 
 - Node 02 新增「同步並移除單筆 FIFO 事件」。自動同步關閉時，每次操作最多移除一筆，沿用 Stage 8B 的 SQLite 提交、頭部核對與移除回應驗證。

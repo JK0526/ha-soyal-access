@@ -3,7 +3,6 @@
 import asyncio
 import logging
 import sqlite3
-from hashlib import sha256
 
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util import dt as dt_util
@@ -26,32 +25,33 @@ class FifoReadProtocolError(ProtocolError):
 
 
 class FifoSync:
-    def __init__(self, hub, storage):
+    def __init__(self, hub, storage, hass, entry):
         self.hub = hub
         self.storage = storage
+        self.hass = hass
+        self.entry = entry
         self.task = None
         self._single_task = None
         self._last_single = {}
         self._wake = asyncio.Event()
-        # A previous load may have failed to persist its safety pause.
-        self._enabled = False
-        self.state = "disabled"
-        self.attributes = {}
-        self._advance_candidate = None
+        self._clean_cycle = False
+        self.state = "waiting_for_gateway" if self.enabled else "disabled"
+        self.attributes = {"desired_auto_sync": self.enabled}
         self._pause_reason = None
         self._last_diagnostics = {}
 
     @property
     def enabled(self):
-        return self._enabled
+        return self.entry.data.get("desired_auto_sync") is True
 
     def set_enabled(self, enabled):
         if self._single_task is not None:
             if enabled:
                 raise HomeAssistantError("Single FIFO synchronization is running")
             return
-        self._advance_candidate = None
-        self._enabled = enabled
+        self.hass.config_entries.async_update_entry(
+            self.entry, data={**self.entry.data, "desired_auto_sync": enabled}
+        )
         self._wake.set()
         if not enabled or self.state == "disabled":
             self._report("idle" if enabled else "disabled")
@@ -69,7 +69,6 @@ class FifoSync:
         async with self.hub.fifo_operation:
             await self.storage.set_pause(None)
             self._pause_reason = None
-            self._advance_candidate = None
             self._report("disabled")
             self._wake.set()
 
@@ -124,7 +123,12 @@ class FifoSync:
             attributes = {**attributes, "pause_reason": self._pause_reason}
         elif not self.enabled:
             state, attributes = "disabled", {}
-        attributes = {**self._last_diagnostics, **self._last_single, **attributes}
+        attributes = {
+            **self._last_diagnostics,
+            **self._last_single,
+            **attributes,
+            "desired_auto_sync": self.enabled,
+        }
         if (state, attributes) != (self.state, self.attributes):
             self.state, self.attributes = state, attributes
             self.hub.notify()
@@ -153,8 +157,28 @@ class FifoSync:
             if self._ready() and not self.hub.fifo_pending:
                 async with self.hub.fifo_operation:
                     if self._ready() and not self.hub.fifo_pending:
-                        delay = await self._cycle()
+                        delay = await self._auto_cycle()
             await asyncio.sleep(delay)
+
+    async def _auto_cycle(self):
+        try:
+            blocked = await self.storage.begin_auto_cycle()
+            if blocked:
+                self._pause_reason = blocked
+                self._report("paused", last_error_type=blocked)
+                return IDLE_DELAY
+            self._clean_cycle = False
+            delay = await self._cycle()
+            if self._clean_cycle:
+                await self.storage.finish_auto_cycle()
+            elif not self._pause_reason:
+                self._pause_reason = self.attributes.get("last_error_type", "in_flight")
+                self._report("paused", last_error_type=self._pause_reason)
+            return delay
+        except (OSError, sqlite3.Error):
+            self._pause_reason = "auto_safety_storage_error"
+            self._report("paused", last_error_type=self._pause_reason)
+            return IDLE_DELAY
 
     def _check_wire_priority(self, session=None):
         if (
@@ -190,8 +214,6 @@ class FifoSync:
             return await self.hub.transport.pop_oldest_event()
 
     async def _cycle(self):
-        previous_candidate = self._advance_candidate
-        self._advance_candidate = None
         pending = None
         try:
             self._pause_reason = self._pause_reason or await self.storage.pause_reason()
@@ -201,14 +223,11 @@ class FifoSync:
             pending = await self.storage.progress()
             if pending and pending[1] == "pop_uncertain":
                 self._report("pop_uncertain", pending_event_id=pending[0])
-                if self._single_task is not None:
-                    return IDLE_DELAY
+                return IDLE_DELAY
             session = self.hub.transport.session_id
             frame = await self._read()
             if frame.code in (4, 5):
-                if pending and pending[1] == "pop_uncertain":
-                    # A same/empty/negative response does not resolve a lost ACK.
-                    return IDLE_DELAY
+                self._clean_cycle = pending is None
                 if pending or frame.code == 5:
                     self._report(
                         "paused",
@@ -217,28 +236,13 @@ class FifoSync:
                         else "head_mismatch",
                     )
                 else:
+                    self._clean_cycle = True
                     self._report("empty" if self._single_task else "idle")
                 return IDLE_DELAY
 
             event = parse_event(frame)
             event["read_at"] = utc_now()
             raw = bytes.fromhex(event["raw_frame_hex"])
-            if pending and pending[1] == "pop_uncertain":
-                if raw != pending[2]:
-                    candidate = (pending[0], session, raw)
-                    if candidate != previous_candidate:
-                        self._advance_candidate = candidate
-                        return IDLE_DELAY
-                    await self.storage.transition(
-                        pending[0],
-                        "pop_uncertain",
-                        "advanced_observed",
-                        utc_now(),
-                        sha256(raw).hexdigest(),
-                    )
-                    self._report("idle", last_resolution="advanced_observed")
-                # Never send a removal in an uncertainty reconciliation cycle.
-                return IDLE_DELAY
             if pending and raw != pending[2]:
                 self._report(
                     "paused",
@@ -268,6 +272,7 @@ class FifoSync:
                 await self.storage.transition(
                     event_id, "pop_uncertain", "saved", utc_now()
                 )
+                self._clean_cycle = self.hub.can_query
                 return IDLE_DELAY
             if code is None:
                 await self.storage.transition(
@@ -288,6 +293,7 @@ class FifoSync:
             await self.storage.transition(
                 event_id, "pop_uncertain", "popped_confirmed", utc_now()
             )
+            self._clean_cycle = True
             if self._single_task:
                 self._report("popped_confirmed", last_event_id=event_id)
             else:
@@ -302,6 +308,7 @@ class FifoSync:
                 self._report("paused", last_error_type="pause_storage_error")
             return IDLE_DELAY
         except NotSentError:
+            self._clean_cycle = True
             return IDLE_DELAY
         except (sqlite3.Error, OSError, ProtocolError) as err:
             # SQLite may fail on either side of the wire operation. If an intent

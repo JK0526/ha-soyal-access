@@ -79,6 +79,7 @@ async def test_sync_disabled_empty_nack_identical_heads_and_legacy_migration(
         assert not hub.fifo_storage.path.exists()
         await hub.fifo_storage.save(observation())
         await no_commands(writer, requests)
+        await hub.fifo_storage.set_pause(None)
         await toggle(hass, entry, True)
         assert hub.fifo_sync.enabled
         await read_head(writer, requests, ACK)
@@ -163,18 +164,19 @@ async def test_failures_do_not_delete_unsaved_heads(hass, tmp_path, monkeypatch,
             monkeypatch.setattr(storage, "transition", fail_transition)
 
         raw = synthetic_event()
+        await hub.fifo_storage.set_pause(None)
         await toggle(hass, entry, True)
         await read_head(writer, requests, raw)
         if phase == "ack_commit":
             await read_head(writer, requests, raw)
             assert await next_command(writer, requests) == POP
             await send(writer, FIELD_POP_ACK)
-            expected = "pop_uncertain"
+            expected = "paused"
         elif phase == "changed_head":
             await read_head(writer, requests, synthetic_event(0x10))
             expected = "paused"
         else:
-            expected = "storage_error"
+            expected = "paused"
         await eventually(lambda: hub.fifo_sync.state == expected)
         await toggle(hass, entry, False)
         assert hub.can_pulse and hub.node_online
@@ -202,6 +204,7 @@ async def test_unconfirmed_removal_is_never_replayed(hass, tmp_path, loss):
         hub = entry.runtime_data
         writer, requests, closed = await next_item(connections)
         await validate(hub, writer, requests)
+        await hub.fifo_storage.set_pause(None)
         await toggle(hass, entry, True)
         raw = synthetic_event()
         event_id = await expect_saved_pop(hub, writer, requests, raw)
@@ -222,36 +225,11 @@ async def test_unconfirmed_removal_is_never_replayed(hass, tmp_path, loss):
             writer, requests, _ = await next_item(connections)
             hub = entry.runtime_data
             await validate(hub, writer, requests)
-            if loss == "reload_after_send":
-                assert not hub.fifo_sync.enabled
-                await no_commands(writer, requests)
-                await toggle(hass, entry, True)
-        else:
-            await eventually(lambda: hub.fifo_sync.state == "pop_uncertain")
-
-        await read_head(writer, requests, raw)
-        await read_head(writer, requests, ACK)
+        await eventually(lambda: hub.fifo_sync.state == "paused")
+        assert hub.fifo_sync.enabled and hub.can_pulse
         assert (await hub.fifo_storage.progress())[:2] == (event_id, "pop_uncertain")
-        assert hub.can_pulse and hub.fifo_sync.enabled
-        # A one-off different frame, followed by the old head, cannot resolve it.
-        different = synthetic_event(0x10)
-        await read_head(writer, requests, different)
-        await read_head(writer, requests, raw)
-        assert (await hub.fifo_storage.progress())[:2] == (event_id, "pop_uncertain")
-        await read_head(writer, requests, different)
-        assert (await hub.fifo_storage.progress())[:2] == (event_id, "pop_uncertain")
-        await read_head(writer, requests, different)
-        await eventually(
-            lambda: (
-                hub.fifo_sync.attributes.get("last_resolution") == "advanced_observed"
-            )
-        )
-        await toggle(hass, entry, False)
-        assert await hub.fifo_storage.progress() is None
-        assert rows(
-            hub.fifo_storage.path, "SELECT consumption_status FROM fifo_access_events"
-        ) == [("advanced_observed",)]
         await no_commands(writer, requests)
+        await toggle(hass, entry, False)
         assert await hass.config_entries.async_unload(entry.entry_id)
 
 
@@ -278,15 +256,17 @@ async def test_persisted_progress_is_read_before_first_removal(
         hub = entry.runtime_data
         writer, requests, _ = await next_item(connections)
         await validate(hub, writer, requests)
+        await hub.fifo_storage.set_pause(None)
         await toggle(hass, entry, True)
-        await read_head(writer, requests, raw)
         if durable_state == "saved":
+            await read_head(writer, requests, raw)
             await read_head(writer, requests, raw)
             assert await next_command(writer, requests) == POP
             await send(writer, FIELD_POP_ACK)
             await eventually(lambda: hub.fifo_sync.state == "idle")
         else:
-            await read_head(writer, requests, raw)
+            await eventually(lambda: hub.fifo_sync.state == "paused")
+            await no_commands(writer, requests)
             assert (await hub.fifo_storage.progress())[:2] == (event_id, durable_state)
         await toggle(hass, entry, False)
         assert rows(hub.fifo_storage.path, "SELECT id FROM fifo_access_events") == [
@@ -303,6 +283,7 @@ async def test_manual_and_control_take_priority_over_unsent_pop(hass, tmp_path):
         writer, requests, _ = await next_item(connections)
         await validate(hub, writer, requests)
         raw = synthetic_event()
+        await hub.fifo_storage.set_pause(None)
         await toggle(hass, entry, True)
         await read_head(writer, requests, raw)
         assert await next_command(writer, requests) == FIFO
@@ -335,6 +316,7 @@ async def test_disabling_during_recheck_prevents_pop(hass, tmp_path):
         writer, requests, _ = await next_item(connections)
         await validate(hub, writer, requests)
         raw = synthetic_event()
+        await hub.fifo_storage.set_pause(None)
         await toggle(hass, entry, True)
         await read_head(writer, requests, raw)
         assert await next_command(writer, requests) == FIFO
@@ -377,7 +359,7 @@ async def test_endpoint_change_disables_sync_and_preserves_journal(hass, tmp_pat
         writer, requests, _ = await next_item(other)
         await validate(entry.runtime_data, writer, requests)
         await toggle(hass, entry, True)
-        await eventually(lambda: entry.runtime_data.fifo_sync.state == "storage_error")
+        await eventually(lambda: entry.runtime_data.fifo_sync.state == "paused")
         await no_commands(writer, requests)
         assert rows(
             hub.fifo_storage.path, "SELECT consumption_status FROM fifo_access_events"
@@ -392,6 +374,7 @@ async def test_empty_after_one_event_does_not_send_another_removal(hass, tmp_pat
         hub = entry.runtime_data
         writer, requests, _ = await next_item(connections)
         await validate(hub, writer, requests)
+        await hub.fifo_storage.set_pause(None)
         await toggle(hass, entry, True)
         await expect_saved_pop(hub, writer, requests, synthetic_event())
         await send(writer, FIELD_POP_ACK)
@@ -484,6 +467,7 @@ async def test_extended_fifo_ack_has_no_command_identity(hass, tmp_path, delayed
         writer, requests, closed = await next_item(connections)
         await validate(hub, writer, requests)
         if delayed_pop:
+            await hub.fifo_storage.set_pause(None)
             await toggle(hass, entry, True)
             event_id = await expect_saved_pop(hub, writer, requests, synthetic_event())
             await asyncio.wait_for(closed.wait(), 2)
@@ -508,21 +492,15 @@ async def test_extended_fifo_ack_has_no_command_identity(hass, tmp_path, delayed
         await no_commands(writer, requests)
 
 
-@pytest.mark.parametrize("pending_pop", [False, True])
-async def test_auto_fifo_protocol_pause_survives_reload(hass, tmp_path, pending_pop):
+async def test_auto_fifo_protocol_pause_survives_reload(hass, tmp_path):
     hass.config.config_dir = str(tmp_path)
     async with gateway(allow_fifo=True, allow_pop=True) as (port, connections):
         entry = await setup_entry(hass, port, timeout=0.35)
         hub = entry.runtime_data
         writer, requests, closed = await next_item(connections)
         await validate(hub, writer, requests)
+        await hub.fifo_storage.set_pause(None)
         await toggle(hass, entry, True)
-        if pending_pop:
-            await expect_saved_pop(hub, writer, requests, synthetic_event())
-            await asyncio.wait_for(closed.wait(), 2)
-            writer, requests, closed = await next_item(connections)
-            await validate(hub, writer, requests)
-
         await read_head(writer, requests, FIELD_POP_ACK)
         await asyncio.wait_for(closed.wait(), 2)
         await eventually(lambda: hub.fifo_sync.state == "paused")
@@ -554,9 +532,7 @@ async def test_auto_fifo_protocol_pause_survives_reload(hass, tmp_path, pending_
         )
         assert await hub.fifo_storage.pause_reason() is None
         progress = await hub.fifo_storage.progress()
-        assert (progress[1] if progress else None) == (
-            "pop_uncertain" if pending_pop else None
-        )
+        assert progress is None
         await no_commands(writer, requests)
         await toggle(hass, entry, True)
         await read_head(writer, requests, ACK)
@@ -575,13 +551,10 @@ async def test_pause_commit_failure_requires_fresh_enable(
             entry, data={**entry.data, "fifo_auto_sync": True}
         )
         hub = entry.runtime_data
-        writer, requests, closed = await next_item(connections)
+        writer, requests, _ = await next_item(connections)
         await validate(hub, writer, requests)
+        await hub.fifo_storage.set_pause(None)
         await toggle(hass, entry, True)
-        event_id = await expect_saved_pop(hub, writer, requests, synthetic_event())
-        await asyncio.wait_for(closed.wait(), 2)
-        writer, requests, closed = await next_item(connections)
-        await validate(hub, writer, requests)
 
         async def fail_pause(reason):
             raise sqlite3.OperationalError("simulated pause commit failure")
@@ -604,18 +577,55 @@ async def test_pause_commit_failure_requires_fresh_enable(
         hub = entry.runtime_data
         writer, requests, _ = await next_item(connections)
         await validate(hub, writer, requests)
-        assert not hub.fifo_sync.enabled
+        assert hub.fifo_sync.enabled
+        await eventually(lambda: hub.fifo_sync.state == "paused")
+        assert hub.fifo_sync.attributes["pause_reason"] == "in_flight"
         assert hub.can_pulse
         await no_commands(writer, requests)
+        await toggle(hass, entry, False)
         await hass.services.async_call(
             DOMAIN,
             "clear_fifo_pause",
             {"entry_id": entry.entry_id, "verified": True},
             blocking=True,
         )
-        assert (await hub.fifo_storage.progress())[:2] == (event_id, "pop_uncertain")
         await no_commands(writer, requests)
         await toggle(hass, entry, True)
-        await read_head(writer, requests, synthetic_event())
         await read_head(writer, requests, ACK)
-        assert (await hub.fifo_storage.progress())[:2] == (event_id, "pop_uncertain")
+        await read_head(writer, requests, ACK)
+
+
+@pytest.mark.parametrize("startup", ["reload", "restart", "off", "interrupted_read"])
+async def test_auto_sync_startup_safety(hass, tmp_path, startup):
+    hass.config.config_dir = str(tmp_path)
+    async with gateway(allow_fifo=True, allow_pop=True) as (port, connections):
+        entry = await setup_entry(hass, port, timeout=0.35)
+        hub = entry.runtime_data
+        writer, requests, _ = await next_item(connections)
+        await validate(hub, writer, requests)
+        await hub.fifo_storage.set_pause(None)
+        await toggle(hass, entry, True)
+        assert await next_command(writer, requests) == FIFO
+        if startup != "interrupted_read":
+            await send(writer, ACK)
+            await eventually(lambda: not hub.fifo_operation.locked())
+        if startup == "off":
+            await toggle(hass, entry, False)
+
+        if startup == "restart":
+            assert await hass.config_entries.async_unload(entry.entry_id)
+            assert await hass.config_entries.async_setup(entry.entry_id)
+        else:
+            assert await hass.config_entries.async_reload(entry.entry_id)
+        hub = entry.runtime_data
+        writer, requests, _ = await next_item(connections)
+        await validate(hub, writer, requests)
+        assert hub.fifo_sync.enabled == (startup != "off")
+        if startup in ("off", "interrupted_read"):
+            await no_commands(writer, requests, duration=0.65)
+            if startup == "interrupted_read":
+                assert hub.fifo_sync.state == "paused"
+                assert hub.fifo_sync.attributes["pause_reason"] == "in_flight"
+        else:
+            await read_head(writer, requests, ACK)
+            await eventually(lambda: hub.fifo_sync.state == "idle")

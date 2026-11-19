@@ -25,6 +25,31 @@ class SyncStorage(FifoStorage):
     async def transition(self, event_id, previous, status, now, evidence=None):
         await self._run(self._transition, event_id, previous, status, now, evidence)
 
+    async def begin_auto_cycle(self):
+        return await self._run(self._begin_auto_cycle)
+
+    async def finish_auto_cycle(self):
+        await self._run(self._finish_auto_cycle)
+
+    def _begin_auto_cycle(self):
+        with closing(self._connect()) as db, db:
+            pending = self._pending(db)
+            if pending and pending[1] == "pop_uncertain":
+                return pending[1]
+            if db.execute("SELECT 1 FROM fifo_sync_pause").fetchone():
+                return "fifo_protocol_pause"
+            state = db.execute(
+                "SELECT state FROM fifo_auto_safety WHERE singleton = 1"
+            ).fetchone()[0]
+            if state != "safe":
+                return state
+            db.execute("UPDATE fifo_auto_safety SET state = 'in_flight'")
+        return None
+
+    def _finish_auto_cycle(self):
+        with closing(self._connect()) as db, db:
+            db.execute("UPDATE fifo_auto_safety SET state = 'safe'")
+
     async def pause_reason(self):
         return await self._run(self._pause_reason)
 
@@ -47,7 +72,11 @@ class SyncStorage(FifoStorage):
         with closing(self._connect()) as db, db:
             if reason is None:
                 db.execute("DELETE FROM fifo_sync_pause")
+                pending = self._pending(db)
+                if pending is None or pending[1] == "saved":
+                    db.execute("UPDATE fifo_auto_safety SET state = 'safe'")
             else:
+                db.execute("UPDATE fifo_auto_safety SET state = 'paused'")
                 db.execute(
                     "INSERT OR REPLACE INTO fifo_sync_pause VALUES (1, ?)", (reason,)
                 )
@@ -79,6 +108,13 @@ class SyncStorage(FifoStorage):
                 reason TEXT NOT NULL
             )
         """)
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS fifo_auto_safety (
+                singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                state TEXT NOT NULL CHECK (state IN ('safe', 'in_flight', 'paused'))
+            )
+        """)
+        db.execute("INSERT OR IGNORE INTO fifo_auto_safety VALUES (1, 'paused')")
         row = db.execute(
             "SELECT version, endpoint FROM fifo_sync_schema WHERE singleton = 1"
         ).fetchone()

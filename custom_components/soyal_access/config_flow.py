@@ -68,7 +68,7 @@ class SoyalConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     data["host"],
                     data["port"],
                 ):
-                    updated["fifo_auto_sync"] = False
+                    updated["desired_auto_sync"] = False
                 return self.async_update_reload_and_abort(
                     entry, unique_id=key, title=key, data=updated
                 )

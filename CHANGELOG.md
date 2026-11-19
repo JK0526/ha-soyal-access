@@ -2,6 +2,11 @@
 
 版本來源為 [manifest.json](custom_components/soyal_access/manifest.json)。Git Tag 使用 `v` 前綴。預發佈使用 Semantic Versioning 的 `-beta.N` 或 `-rc.N`，正式版使用不帶預發佈後綴的版本。
 
+## v0.7.1-beta.7
+
+- 修正 FIFO 自動同步開關切換後，開關與同步狀態感測器可能不同步的問題。HA 會立即更新開關與 `desired_auto_sync`，並保留安全暫停原因。
+- 加入 Gateway 連線及離線時的開關回歸測試，涵蓋 Reload 後的狀態一致性。
+
 ## v0.7.1-beta.6
 
 - 修正 HA Reload 後 FIFO 同步狀態感測器可能停在 `unavailable` 的問題。加入 `waiting_for_gateway` ENUM 選項及英文、繁體中文翻譯。

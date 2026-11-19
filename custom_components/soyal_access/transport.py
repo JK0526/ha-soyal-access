@@ -1,154 +1,75 @@
-"""Persistent stream with one in-flight transaction and strict source matching."""
+"""One receive-only TCP connection per loaded config entry."""
 
 import asyncio
-from contextlib import asynccontextmanager
-from time import monotonic
+import logging
 
-from .client import BusClient
-from .protocol import FrameBuffer, ReplyFormat, encode
-
-IO_REPLY = ReplyFormat(frozenset({0x03}), exact_data_size=4)
+_LOGGER = logging.getLogger(__name__)
 
 
-class Transport(BusClient):
-    """Reuse the verified codec and quarantine across TCP reconnections."""
-
-    def __init__(
-        self,
-        host,
-        port,
-        stations,
-        *,
-        timeout,
-        enable_control,
-        link_changed,
-        simulate_preview=False,
-    ):
-        # Transport host validation is provided by Config Flow.
-        super().__init__(
-            host,
-            port,
-            stations,
-            timeout=timeout,
-            enable_control=True,
-            link_changed=link_changed,
-        )
-        self._allowed = {(0x21, b"\x00\x00")}
-        if simulate_preview and host in ("127.0.0.1", "::1"):
-            self._allowed.add((0x25, b""))
-        if enable_control:
-            self._allowed.update((0x21, bytes([code])) for code in (0x82, 0x83, 0x84))
-        self._reader_task = None
+class Transport:
+    def __init__(self, host, port, timeout, link_changed):
+        self._host = host
+        self._port = port
+        self._timeout = timeout
+        self._link_changed = link_changed
+        self._lifecycle = asyncio.Lock()
+        self._receiver = None
         self._writer = None
-        self._pending = None
-        self.operation_lock = asyncio.Lock()
-        self.waiting = 0
-        self.active = False
-        self.transaction_count = 0
-        self.transaction_seconds = 0.0
+        self.connected = False
 
-    @asynccontextmanager
-    async def control_slot(self, notify):
-        """Serialize control from durable intent through confirmed outcome."""
-        self.waiting += 1
-        notify()
-        try:
-            await self.operation_lock.acquire()
-        finally:
-            self.waiting -= 1
-            notify()
-        try:
-            yield
-        finally:
-            self.operation_lock.release()
-
-    @asynccontextmanager
-    async def background_slot(self):
-        """Skip this round if a control is queued or the bus is busy."""
-        if self.waiting or self.operation_lock.locked():
-            yield False
-            return
-        async with self.operation_lock:
-            yield True
-
-    async def _disconnect(self):
-        if self._writer is not None:
-            self._writer.close()
+    async def start(self):
+        async with self._lifecycle:
+            if self._receiver is not None:
+                return
             try:
                 async with asyncio.timeout(self._timeout):
-                    await self._writer.wait_closed()
-            except (OSError, TimeoutError):
-                self._writer.transport.abort()
-            self._writer = None
-        if self._reader_task is not None:
-            self._reader_task.cancel()
-            await asyncio.gather(self._reader_task, return_exceptions=True)
-            self._reader_task = None
-        self._link_changed(False)
+                    reader, writer = await asyncio.open_connection(
+                        self._host, self._port
+                    )
+            except OSError as err:
+                _LOGGER.warning("Gateway TCP connection failed: %s", err)
+                return
+            self._writer = writer
+            self._receiver = asyncio.create_task(
+                self._receive(reader, writer), name="soyal_access_tcp_rx"
+            )
+            self.connected = True
+            self._link_changed()
 
-    async def _receive(self, reader):
-        parser = FrameBuffer()
+    async def _receive(self, reader, writer):
         try:
-            while chunk := await reader.read(4096):
-                for frame in parser.feed(chunk):
-                    if self._pending is None:
-                        continue
-                    request, expected, future = self._pending
-                    reply = expected.classify(frame)
-                    if (
-                        reply is not None
-                        and reply.source == request.node
-                        and not future.done()
-                    ):
-                        future.set_result(reply)
-            raise ConnectionError("Gateway disconnected")
-        except (OSError, ValueError) as err:
-            if self._pending is not None and not self._pending[2].done():
-                self._pending[2].set_exception(err)
-            self._link_changed(False)
-
-    async def connect(self):
-        async with self._lock:
-            if self._closed:
-                raise ConnectionError("Session closed")
-            async with asyncio.timeout(self._timeout):
-                await self._connect()
-
-    async def _connect(self):
-        if self._reader_task is None or self._reader_task.done():
-            await self._disconnect()
-            reader, self._writer = await asyncio.open_connection(self._host, self._port)
-            self._reader_task = asyncio.create_task(self._receive(reader))
-            self._link_changed(True)
-
-    async def _exchange(self, request, reply_format):
-        started = monotonic()
-        future = None
-        try:
-            async with asyncio.timeout(self._timeout):
-                await self._connect()
-                future = asyncio.get_running_loop().create_future()
-                self._pending = (request, reply_format, future)
-                packet = encode(request)
-                self._uncertain_stations.add(request.node)
-                self._writer.write(packet)
-                await self._writer.drain()
-                reply = await future
-                self._uncertain_stations.remove(request.node)
-                return reply
-        except BaseException:
-            await self._disconnect()
-            raise
+            while await reader.read(4096):
+                # Consume incoming bytes to observe EOF without interpreting frames.
+                pass
+        except OSError as err:
+            _LOGGER.debug("Gateway TCP connection lost: %s", err)
         finally:
-            self.transaction_count += 1
-            self.transaction_seconds += monotonic() - started
-            self._pending = None
-            if future is not None:
-                if not future.done():
-                    future.cancel()
-                elif not future.cancelled():
-                    future.exception()
+            writer.close()
+            self._set_disconnected()
+            await self._wait_closed(writer)
+
+    def _set_disconnected(self):
+        if self.connected:
+            self.connected = False
+            self._link_changed()
+
+    async def _wait_closed(self, writer):
+        try:
+            async with asyncio.timeout(self._timeout):
+                await writer.wait_closed()
+        except OSError:
+            writer.transport.abort()
+        except asyncio.CancelledError:
+            writer.transport.abort()
+            raise
 
     async def close(self):
-        await super().close()
-        await self._disconnect()
+        async with self._lifecycle:
+            if self._receiver is not None:
+                self._writer.close()
+                self._receiver.cancel()
+                await asyncio.gather(self._receiver, return_exceptions=True)
+                self._receiver = None
+                await self._wait_closed(self._writer)
+                self._writer = None
+                self._set_disconnected()

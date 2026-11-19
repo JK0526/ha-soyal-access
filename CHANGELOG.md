@@ -2,6 +2,12 @@
 
 版本來源為 [manifest.json](custom_components/soyal_access/manifest.json)。Git Tag 使用 `v` 前綴。預發佈使用 Semantic Versioning 的 `-beta.N` 或 `-rc.N`，正式版使用不帶預發佈後綴的版本。
 
+## v0.7.0-beta.1
+
+- Stage 0 + Stage 1 TCP-only 預發行版，包含 HACS、Host／Port 設定與單一 Gateway TCP 狀態感測器。
+- 載入後建立 TCP，遠端關閉時更新狀態；重載、卸載和 HA 停止會釋放連線。
+- 本版尚未提供門鎖控制、站號輪詢或事件同步。既有設定、Entity Registry、SQLite 與安全封鎖紀錄均保留。
+
 ## v0.6.0-beta.1
 
 - 拆分 Hub、Transport、Coordinator 和 Control，沿用 SOYAL 封包與單一持續 TCP Session。

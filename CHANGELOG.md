@@ -2,6 +2,16 @@
 
 版本來源為 [manifest.json](custom_components/soyal_access/manifest.json)。Git Tag 使用 `v` 前綴。預發佈使用 Semantic Versioning 的 `-beta.N` 或 `-rc.N`，正式版使用不帶預發佈後綴的版本。
 
+## v0.7.0-beta.8
+
+- Stage 6 現場驗收版。新增 Node 02「主門解鎖輸出」，取自既有 200 ms 輪詢 I/O 回應的 Bit 6。
+- 首次有效輪詢前或離線時顯示 Unavailable。控制回應與常開命令狀態不會直接改變感測器。
+- 通過 92 項離線測試、39 項協定子測試、Ruff 及 hassfest。
+
+## v0.7.0-beta.7
+
+- Stage 5 通訊復原修正版。新 TCP 連線完成靜默觀察與兩筆連續有效輪詢後，自動恢復手動控制。
+
 ## v0.7.0-beta.6
 
 - Stage 5 現場驗收版，從測試分支發布。

@@ -1,11 +1,11 @@
 # SOYAL Access Control
 
-`v0.7.0-beta.6` 是 Stage 5 預發行版。Home Assistant domain 為 `soyal_access`。本版提供 Gateway TCP 狀態、Node 02 手動唯讀 I/O 查詢、脈衝開門與常開控制。本版加入 200 ms 唯讀輪詢、Node 02 Online 及 TCP 自動重連。
+`v0.7.0-beta.8` 是 Stage 6 預發行版。Home Assistant domain 為 `soyal_access`。本版提供 Gateway TCP 狀態、Node 02 手動唯讀 I/O 查詢、脈衝開門與常開控制。本版新增 Node 02 主門解鎖輸出感測器，沿用 Stage 5 的 200 ms 唯讀輪詢。
 
 ## HACS 安裝或更新
 
 1. 若 HACS 尚未有此套件，在自訂儲存庫新增 `https://github.com/JK0526/ha-soyal-access`，類型選 Integration。
-2. 開啟 SOYAL Access Control 的下載或重新下載選單，指定 `v0.7.0-beta.6`，完成後重新啟動 Home Assistant。
+2. 開啟 SOYAL Access Control 的下載或重新下載選單，指定 `v0.7.0-beta.8`，完成後重新啟動 Home Assistant。
 3. 已有 SOYAL Config Entry 會沿用原設定。首次安裝從「設定 → 裝置與服務 → 新增整合」選 SOYAL Access Control，輸入 Host 與 TCP Port。
 
 升級保留舊 Entity Registry、SQLite 及 `.storage` 封鎖紀錄。Node 02 脈衝開門沿用 beta.3 的 Entity ID 與 Unique ID。上一版程式與操作文件保存在 [v0.6.0-beta.1](https://github.com/JK0526/ha-soyal-access/tree/v0.6.0-beta.1)。版本來源見 [manifest.json](custom_components/soyal_access/manifest.json)，歷史版本見 [CHANGELOG](CHANGELOG.md)。
@@ -48,7 +48,7 @@ SOYAL 回應沒有交易識別碼。新版會拒絕閒置時收到的非預期�
 
 ## Stage 5 現場驗收
 
-請透過 HACS 指定安裝 `v0.7.0-beta.6` 預發行版。
+請透過 HACS 指定安裝 `v0.7.0-beta.8` 預發行版。
 
 - Node 02 每 200 ms 排定一次 `0x21 / 00 00` 唯讀輪詢。單調時鐘與單一背景工作控制週期，忙碌或超過週期時不補送。控制與手動查詢共用 Transport。最多一筆前景操作可等待已送出的輪詢結束，等待期間略過新輪詢。重複前景操作直接拒絕。
 - Gateway TCP 與 Node 02 Online 各自呈現。有效輪詢 I/O 回應才可點亮 Node 02 Online。連續三筆可確認的失敗（例如 NACK）會熄滅，TCP 斷線則立即熄滅，下次有效輪詢可重新點亮。背景輪詢不會更新「最近查詢結果」或「常開」狀態。
@@ -57,3 +57,11 @@ SOYAL 回應沒有交易識別碼。新版會拒絕閒置時收到的非預期�
 - SOYAL 無交易識別碼。若其他 TCP Client 的回應在 HA 交易期間抵達，且內容完全符合預期，SOYAL 封包本身無法識別發送者。現場須確保同一 RS485 匯流排只有 HA 主動發送。若外部 Monitor 發送後觸發 HA 斷線，可能是 Gateway 將該回應也送到 HA，讓 HA 判為閒置資料或不符目前交易的回應。實際轉發方式須由現場觀察確認。
 
 現場先隔離外部發送端，再觀察約 200 ms 的正常輪詢及 Gateway／Node 指示。逐筆驗證脈衝、常開、解除常開及手動查詢，記錄控制等待已發送輪詢的時間。用受控斷線觀察退避、Node 離線及唯讀恢復，確認連線恢復後沒有自行開門。若回應歸屬不明，記錄前後兩個狀態、操作名稱和時間，確認沒有自動重送，並觀察完成兩筆有效輪詢後控制是否恢復可用。
+
+## Stage 6 主門解鎖輸出驗收
+
+1. 在 HACS 重新下載並選擇 `v0.7.0-beta.8`，重啟 HA 後確認 Node 02 裝置下有「主門解鎖輸出」。
+2. 待機時確認 OFF。受控測試脈衝開門、常開、解除常開時，依序確認短暫 ON、維持 ON、回到 OFF。
+3. 受控斷線時確認 Unavailable，恢復後確認感測器採用最新輪詢資料。
+
+感測器顯示控制器的解鎖輸出。實體鎖舌位置須現場確認。

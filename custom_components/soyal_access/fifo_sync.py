@@ -53,10 +53,8 @@ class FifoSync:
             self.entry, data={**self.entry.data, "desired_auto_sync": enabled}
         )
         self._wake.set()
-        if not enabled or self.state == "disabled":
-            self._report("idle" if enabled else "disabled")
-        else:
-            self.hub.notify()
+        state = self.state if enabled and self.state != "disabled" else "idle"
+        self._report(state if enabled else "disabled", force_notify=True)
 
     def start(self):
         self.task = asyncio.create_task(self._run(), name="soyal_access_fifo_sync")
@@ -107,7 +105,7 @@ class FifoSync:
             await asyncio.gather(self.task, return_exceptions=True)
             self.task = None
 
-    def _report(self, state, **attributes):
+    def _report(self, state, *, force_notify=False, **attributes):
         if self._single_task is not None:
             self._last_single = {
                 "last_single_sync_result": state,
@@ -129,7 +127,7 @@ class FifoSync:
             **attributes,
             "desired_auto_sync": self.enabled,
         }
-        if (state, attributes) != (self.state, self.attributes):
+        if force_notify or (state, attributes) != (self.state, self.attributes):
             self.state, self.attributes = state, attributes
             self.hub.notify()
 

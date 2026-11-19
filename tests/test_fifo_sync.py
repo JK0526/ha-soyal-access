@@ -696,3 +696,53 @@ async def test_fifo_sync_sensor_is_live_after_reload(hass, tmp_path, mode):
         else:
             await no_commands(writer, requests)
             assert_live("paused" if mode == "paused" else "disabled")
+
+
+@pytest.mark.parametrize("offline", [False, True])
+async def test_paused_fifo_switch_updates_ha_states_immediately(
+    hass, tmp_path, monkeypatch, offline
+):
+    if offline:
+        monkeypatch.setattr(
+            "custom_components.soyal_access.hub.RECONNECT_DELAYS", (60,)
+        )
+    hass.config.config_dir = str(tmp_path)
+    async with gateway(allow_fifo=True, allow_pop=True) as (port, connections):
+        entry = await setup_entry(hass, port, timeout=1)
+        hub = entry.runtime_data
+        writer, requests, _ = await next_item(connections)
+        await validate(hub, writer, requests)
+        await hub.fifo_storage.set_pause("fifo_read_protocol_error")
+        assert await hass.config_entries.async_reload(entry.entry_id)
+        hub = entry.runtime_data
+        writer, _, _ = await next_item(connections)
+        await eventually(lambda: hub.fifo_sync.state == "paused")
+        registry = er.async_get(hass)
+        switch_id = registry.async_get_entity_id(
+            "switch", DOMAIN, f"{entry.entry_id}:2:fifo_auto_sync"
+        )
+        sensor_id = registry.async_get_entity_id(
+            "sensor", DOMAIN, f"{entry.entry_id}:2:fifo_sync_status"
+        )
+
+        def assert_states(enabled):
+            switch = hass.states.get(switch_id)
+            sensor = hass.states.get(sensor_id)
+            assert switch.state == ("on" if enabled else "off")
+            assert sensor.state == "paused"
+            assert sensor.attributes["desired_auto_sync"] is enabled
+            assert sensor.attributes["pause_reason"] == "fifo_read_protocol_error"
+            assert not sensor.attributes.get("restored")
+
+        if offline:
+            writer.close()
+            await eventually(lambda: not hub.transport.connected)
+
+        for enabled in (True, False, True):
+            await toggle(hass, entry, enabled)
+            assert_states(enabled)
+
+        assert await hass.config_entries.async_reload(entry.entry_id)
+        hub = entry.runtime_data
+        await eventually(lambda: hub.fifo_sync.state == "paused")
+        assert_states(True)

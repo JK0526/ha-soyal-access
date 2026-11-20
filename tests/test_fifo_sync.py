@@ -7,6 +7,7 @@ import pytest
 from homeassistant.helpers import entity_registry as er
 
 from custom_components.soyal_access.const import DOMAIN
+from custom_components.soyal_access.protocol import Frame, encode
 from tests.test_fifo import ACK, FIFO, synthetic_event
 from tests.test_ha import next_item, setup_entry
 from tests.test_stage5 import IO, NACK, POLL, eventually, gateway, send, validate
@@ -15,6 +16,8 @@ from tests.test_storage import observation, rows
 pytestmark = pytest.mark.usefixtures("enable_custom_integrations", "socket_enabled")
 POP = bytes.fromhex("7E 04 02 37 CA 03")
 FIELD_POP_ACK = bytes.fromhex("7E 0A 00 04 02 34 10 00 18 73 B6 8B")
+FIELD_FIFO_NACK = bytes.fromhex("7E 0A 00 05 02 34 10 00 18 73 B7 8D")
+BAD_FIFO_ACK = FIELD_POP_ACK[:-1] + b"\x00"
 
 
 @pytest.fixture(autouse=True)
@@ -82,8 +85,8 @@ async def test_sync_disabled_empty_nack_identical_heads_and_legacy_migration(
         await hub.fifo_storage.set_pause(None)
         await toggle(hass, entry, True)
         assert hub.fifo_sync.enabled
-        await read_head(writer, requests, ACK)
-        await read_head(writer, requests, NACK)
+        await read_head(writer, requests, FIELD_POP_ACK)
+        await read_head(writer, requests, FIELD_FIFO_NACK)
         await eventually(lambda: hub.fifo_sync.state == "paused")
         assert rows(
             hub.fifo_storage.path, "SELECT COUNT(*) FROM fifo_access_events"
@@ -379,8 +382,8 @@ async def test_empty_after_one_event_does_not_send_another_removal(hass, tmp_pat
         await expect_saved_pop(hub, writer, requests, synthetic_event())
         await send(writer, FIELD_POP_ACK)
         # Simulate a controlled test FIFO that contained exactly one event.
-        await read_head(writer, requests, ACK)
-        await read_head(writer, requests, ACK)
+        await read_head(writer, requests, FIELD_POP_ACK)
+        await read_head(writer, requests, FIELD_POP_ACK)
         await toggle(hass, entry, False)
         await no_commands(writer, requests)
         assert rows(
@@ -458,8 +461,9 @@ async def test_single_fifo_press(hass, tmp_path, mode, monkeypatch):
             )
 
 
-@pytest.mark.parametrize("delayed_pop", [False, True])
-async def test_extended_fifo_ack_has_no_command_identity(hass, tmp_path, delayed_pop):
+@pytest.mark.parametrize("mode", ["clean", "reconnected", "reloaded"])
+async def test_extended_fifo_ack_has_no_command_identity(hass, tmp_path, mode):
+    delayed_pop = mode != "clean"
     hass.config.config_dir = str(tmp_path)
     async with gateway(allow_fifo=True, allow_pop=True) as (port, connections):
         entry = await setup_entry(hass, port, timeout=0.35)
@@ -475,19 +479,27 @@ async def test_extended_fifo_ack_has_no_command_identity(hass, tmp_path, delayed
             writer, requests, closed = await next_item(connections)
             await validate(hub, writer, requests)
 
+        if mode == "reloaded":
+            assert await hass.config_entries.async_reload(entry.entry_id)
+            hub = entry.runtime_data
+            writer, requests, closed = await next_item(connections)
+            await validate(hub, writer, requests)
+
         read = asyncio.create_task(hub.read_oldest_event())
         # A genuine empty reply and a delayed removal reply look identical here.
         await read_head(writer, requests, FIELD_POP_ACK)
         await read
-        assert hub.fifo_result == "invalid_response"
-        await asyncio.wait_for(closed.wait(), 2)
+        assert hub.fifo_result == ("invalid_response" if delayed_pop else "empty")
+        if delayed_pop:
+            await asyncio.wait_for(closed.wait(), 2)
         progress = await hub.fifo_storage.progress()
         if delayed_pop:
             assert progress[:2] == (event_id, "pop_uncertain")
         else:
             assert progress is None
-        writer, requests, _ = await next_item(connections)
-        await validate(hub, writer, requests)
+        if delayed_pop:
+            writer, requests, _ = await next_item(connections)
+            await validate(hub, writer, requests)
         assert hub.can_pulse
         await no_commands(writer, requests)
 
@@ -501,7 +513,7 @@ async def test_auto_fifo_protocol_pause_survives_reload(hass, tmp_path):
         await validate(hub, writer, requests)
         await hub.fifo_storage.set_pause(None)
         await toggle(hass, entry, True)
-        await read_head(writer, requests, FIELD_POP_ACK)
+        await read_head(writer, requests, BAD_FIFO_ACK)
         await asyncio.wait_for(closed.wait(), 2)
         await eventually(lambda: hub.fifo_sync.state == "paused")
         writer, requests, _ = await next_item(connections)
@@ -535,8 +547,8 @@ async def test_auto_fifo_protocol_pause_survives_reload(hass, tmp_path):
         assert progress is None
         await no_commands(writer, requests)
         await toggle(hass, entry, True)
-        await read_head(writer, requests, ACK)
-        await read_head(writer, requests, ACK)
+        await read_head(writer, requests, FIELD_POP_ACK)
+        await read_head(writer, requests, FIELD_POP_ACK)
 
 
 @pytest.mark.parametrize("restart", [False, True])
@@ -560,7 +572,7 @@ async def test_pause_commit_failure_requires_fresh_enable(
             raise sqlite3.OperationalError("simulated pause commit failure")
 
         monkeypatch.setattr(hub.fifo_storage, "set_pause", fail_pause)
-        await read_head(writer, requests, FIELD_POP_ACK)
+        await read_head(writer, requests, BAD_FIFO_ACK)
         await eventually(
             lambda: (
                 hub.fifo_sync.attributes.get("last_error_type") == "pause_storage_error"
@@ -591,8 +603,8 @@ async def test_pause_commit_failure_requires_fresh_enable(
         )
         await no_commands(writer, requests)
         await toggle(hass, entry, True)
-        await read_head(writer, requests, ACK)
-        await read_head(writer, requests, ACK)
+        await read_head(writer, requests, FIELD_POP_ACK)
+        await read_head(writer, requests, FIELD_POP_ACK)
 
 
 @pytest.mark.parametrize("startup", ["reload", "restart", "off", "interrupted_read"])
@@ -627,7 +639,7 @@ async def test_auto_sync_startup_safety(hass, tmp_path, startup):
                 assert hub.fifo_sync.state == "paused"
                 assert hub.fifo_sync.attributes["pause_reason"] == "in_flight"
         else:
-            await read_head(writer, requests, ACK)
+            await read_head(writer, requests, FIELD_POP_ACK)
             await eventually(lambda: hub.fifo_sync.state == "idle")
 
 
@@ -682,7 +694,7 @@ async def test_fifo_sync_sensor_is_live_after_reload(hass, tmp_path, mode):
 
         await validate(hub, writer, requests)
         if mode == "on":
-            await read_head(writer, requests, ACK)
+            await read_head(writer, requests, FIELD_POP_ACK)
             await eventually(lambda: hub.fifo_sync.state == "idle")
             assert_live("idle")
         elif mode == "pop_uncertain":
@@ -746,3 +758,27 @@ async def test_paused_fifo_switch_updates_ha_states_immediately(
         hub = entry.runtime_data
         await eventually(lambda: hub.fifo_sync.state == "paused")
         assert_states(True)
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        BAD_FIFO_ACK,
+        encode(Frame(0, 4, bytes.fromhex("03 34 10 00 18 73"))),
+        encode(Frame(0, 4, bytes.fromhex("02 34 10 00 18 72"))),
+        encode(Frame(0, 4, bytes.fromhex("02 34 10 00 18"))),
+    ],
+)
+async def test_unknown_fifo_status_never_becomes_empty(hass, tmp_path, reply):
+    hass.config.config_dir = str(tmp_path)
+    async with gateway(allow_fifo=True) as (port, connections):
+        entry = await setup_entry(hass, port, timeout=0.35)
+        hub = entry.runtime_data
+        writer, requests, closed = await next_item(connections)
+        await validate(hub, writer, requests)
+        read = asyncio.create_task(hub.read_oldest_event())
+        await read_head(writer, requests, reply)
+        await read
+        assert hub.fifo_result == "invalid_response"
+        await asyncio.wait_for(closed.wait(), 2)
+        assert not hub.fifo_storage.path.exists()

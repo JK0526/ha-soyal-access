@@ -211,6 +211,12 @@ class Hub:
             self.fifo_pending = False
 
     async def _read_fifo(self):
+        try:
+            allow_extended_status = (
+                await self.fifo_storage.manual_extended_status_allowed()
+            )
+        except (OSError, sqlite3.Error):
+            allow_extended_status = False
         self._fifo_waiting = True
         attributes = {}
         try:
@@ -223,7 +229,9 @@ class Hub:
                     if not self.can_query:
                         raise NotSentError
                     self._fifo_waiting = False
-                    frame = await self.transport.read_oldest_event()
+                    frame = await self.transport.read_oldest_event(
+                        allow_extended_status=allow_extended_status
+                    )
                     break
             if frame.code == 4:
                 result = "empty"

@@ -7,6 +7,7 @@ from time import monotonic
 from .protocol import HEADER, Frame, ProtocolError, decode, encode
 
 _FIFO = encode(Frame(2, 0x25))
+_FIELD_FIFO_STATUS = bytes.fromhex("02 34 10 00 18 73")
 _POP = encode(Frame(2, 0x37))
 _QUERY = encode(Frame(2, 0x21, b"\x00\x00"))
 _CONTROLS = {code: encode(Frame(2, 0x21, bytes([code]))) for code in (0x82, 0x83, 0x84)}
@@ -34,6 +35,9 @@ class Transport:
         self.tainted = False
         self._expected = {9: (3,)}
         self.last_io = None
+        # A new TCP socket does not prove that old RS485 replies were drained.
+        self._fifo_reply_uncertain = False
+        self._strict_fifo_status = False
 
     async def start(self):
         async with self._lifecycle:
@@ -63,6 +67,7 @@ class Transport:
             while chunk := await reader.read(4096):
                 pending = self.pending
                 if pending is None or pending.done():
+                    self._fifo_reply_uncertain = True
                     self.tainted = True
                     break
                 buffer.extend(chunk)
@@ -79,6 +84,12 @@ class Transport:
                 )
                 if frame.node != 0 or not valid_code or frame.payload[0] != 2:
                     raise ProtocolError("Unexpected SOYAL response type or source")
+                if (
+                    self._strict_fifo_status
+                    and buffer[1] == 10
+                    and frame.payload != _FIELD_FIFO_STATUS
+                ):
+                    raise ProtocolError("Unrecognized extended FIFO status")
                 if buffer[1] == 9:
                     self.last_io = bytes(buffer)
                 buffer.clear()
@@ -113,15 +124,21 @@ class Transport:
         )
         return frame.code
 
-    async def read_oldest_event(self):
-        _, frame = await self._exchange(_FIFO, expected={5: (4, 5), 29: None})
+    async def read_oldest_event(self, *, allow_extended_status=False):
+        expected = {5: (4, 5), 29: None}
+        allow_extended_status = allow_extended_status and not self._fifo_reply_uncertain
+        if allow_extended_status:
+            expected[10] = (4, 5)
+        _, frame = await self._exchange(
+            _FIFO, expected=expected, strict_fifo_status=allow_extended_status
+        )
         return frame
 
     async def pop_oldest_event(self):
         _, frame = await self._exchange(_POP, expected={5: (5,), 10: (4, 5)})
         return frame.code
 
-    async def _exchange(self, packet, *, expected):
+    async def _exchange(self, packet, *, expected, strict_fifo_status=False):
         if (
             not self.connected
             or self._writer is None
@@ -132,6 +149,7 @@ class Transport:
             raise NotSentError("Gateway cannot accept a transaction")
         future = asyncio.get_running_loop().create_future()
         self._expected = expected
+        self._strict_fifo_status = strict_fifo_status
         self.pending = future
         started = monotonic()
         try:
@@ -143,6 +161,8 @@ class Transport:
                     raise ProtocolError("Unexpected data after the response")
                 return received - started, frame
         except (TimeoutError, OSError, ProtocolError, asyncio.CancelledError):
+            if packet in (_FIFO, _POP):
+                self._fifo_reply_uncertain = True
             self.tainted = True
             self._link_changed()
             await self.close()

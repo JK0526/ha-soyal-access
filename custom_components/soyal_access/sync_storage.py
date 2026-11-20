@@ -50,6 +50,39 @@ class SyncStorage(FifoStorage):
         with closing(self._connect()) as db, db:
             db.execute("UPDATE fifo_auto_safety SET state = 'safe'")
 
+    async def manual_extended_status_allowed(self):
+        return await self._run(self._manual_extended_status_allowed)
+
+    def _manual_extended_status_allowed(self):
+        if not self.path.exists():
+            return True
+        with closing(sqlite3.connect(f"{self.path.as_uri()}?mode=ro", uri=True)) as db:
+            tables = {
+                row[0]
+                for row in db.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                )
+            }
+            if "fifo_sync_schema" in tables:
+                schema = db.execute(
+                    "SELECT version, endpoint FROM fifo_sync_schema WHERE singleton = 1"
+                ).fetchone()
+                if schema != (_SCHEMA_VERSION, self._endpoint):
+                    return False
+                pending = self._pending(db)
+                if pending and pending[1] == "pop_uncertain":
+                    return False
+            if (
+                "fifo_sync_pause" in tables
+                and db.execute("SELECT 1 FROM fifo_sync_pause").fetchone()
+            ):
+                return False
+            if "fifo_auto_safety" not in tables:
+                return True
+            return db.execute(
+                "SELECT state FROM fifo_auto_safety WHERE singleton = 1"
+            ).fetchone() == ("safe",)
+
     async def pause_reason(self):
         return await self._run(self._pause_reason)
 

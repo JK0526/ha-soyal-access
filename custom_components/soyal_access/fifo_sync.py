@@ -189,7 +189,9 @@ class FifoSync:
 
     async def _read_frame(self):
         try:
-            return await self.hub.transport.read_oldest_event()
+            return await self.hub.transport.read_oldest_event(
+                allow_extended_status=True
+            )
         except ProtocolError as err:
             raise FifoReadProtocolError from err
 

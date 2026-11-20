@@ -93,7 +93,7 @@ Hub 沿用單一背景工作、單一 Transport 和一筆在途交易。每個 2
 Node 02 的「最近門禁事件」Sensor 狀態為既有 SQLite 的事件總數。
 `events` attribute 依 `id` 由新到舊提供最多 100 筆，每筆包含
 `id`、`received_at`、`event_time_local`、`event_type`、`port`、`user_address`。
-Dashboard Card 可使用 `events[0]` 顯示最新事件，並逐筆呈現列表。
+以下內建 Markdown 卡片範例顯示最新 15 筆事件。未知事件不推斷通行結果；缺少欄位時顯示「未知」。
 `user_address` 是控制器使用者位址，姓名與實際通行結果需另有已確認資料才能呈現。
 
 啟動及 FIFO 保存成功後自動透過 executor 更新。
@@ -102,7 +102,26 @@ Dashboard Card 可使用 `events[0]` 顯示最新事件，並逐筆呈現列表�
 歷史明細從既有 `access_events` 資料表以唯讀連線查詢。
 資料庫不存在時顯示 0 與空列表，讀取失敗時 Sensor 顯示不可用，下次更新可恢復。
 
-## SOYAL Dashboard
+### 內建 Markdown 卡片
 
-深色 Lovelace 儀表板提供連線、常開控制、解鎖輸出、選填門磁及最近 100 筆 FIFO 事件。
-安裝工具會辨識現有實體並建立 Dashboard，詳見 [Dashboard 安裝與更新](dashboard/README.md)。
+在 HA Dashboard 編輯模式新增「Markdown」卡片，切換至 YAML 編輯，貼上範例，並將 `sensor.node_02_access_event_history` 換成此 Sensor 的實際 Entity ID：
+
+```yaml
+type: markdown
+title: 最近門禁事件
+content: >-
+  {% set entity = 'sensor.node_02_access_event_history' %}
+  {% set events = state_attr(entity, 'events') or [] %}
+  {% if not has_value(entity) %}
+  歷史資料目前無法讀取。
+  {% elif events | count == 0 %}
+  尚無門禁事件。
+  {% else %}
+  {% for event in events[:15] %}
+  {% set event_type = event.get('event_type', 'unknown_event') %}
+  **{{ event.get('event_time_local') or event.get('received_at') or '時間未知' }}** · {% if event_type == 'card_access' %}卡片事件{% elif event_type == 'egress' %}出門事件{% elif event_type == 'pin_access' %}密碼事件{% else %}未知事件{% endif %} · 使用者位址：{{ event.get('user_address', '未知') }} · 門號：{{ event.get('port', '未知') }}
+  {% endfor %}
+  {% endif %}
+```
+
+事件依最新優先排列。`event_time_local` 有值時直接顯示控制器本地時間，否則顯示接收時間。此卡只呈現已保存欄位，不顯示未確認的通行成功／失敗結果。新增事件後 Sensor 自動更新，Markdown 卡片隨 HA 狀態更新；不需要安裝額外資源或自訂前端。

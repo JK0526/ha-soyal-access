@@ -1,4 +1,4 @@
-"""Read-only access event history for dashboard cards."""
+"""Read-only access event history for Home Assistant entities."""
 
 import asyncio
 import logging

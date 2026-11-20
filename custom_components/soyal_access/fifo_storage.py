@@ -49,3 +49,20 @@ class FifoStorage:
                     event["raw_frame_hex"],
                 ),
             )
+
+    def read_history(self):
+        """Read a consistent count and latest rows without creating a database."""
+        if not self.path.exists():
+            return 0, []
+        with closing(
+            sqlite3.connect(f"{self.path.resolve().as_uri()}?mode=ro", uri=True)
+        ) as db:
+            db.row_factory = sqlite3.Row
+            db.execute("BEGIN")
+            count = db.execute("SELECT COUNT(*) FROM access_events").fetchone()[0]
+            rows = db.execute(
+                """SELECT id, received_at, event_time_local, event_type,
+                          port, user_address
+                   FROM access_events ORDER BY id DESC LIMIT 100"""
+            ).fetchall()
+            return count, [dict(row) for row in rows]

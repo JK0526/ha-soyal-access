@@ -87,3 +87,17 @@ Hub 沿用單一背景工作、單一 Transport 和一筆在途交易。每個 2
 | 0x37 timeout 復原後 | 201.23 ms | 201.34 ms | 201.34 ms | timeout 250 ms、測試退避 100 ms；斷線後首個 0x21 為 352.77 ms |
 
 這些數字是單機 TCP loopback 數據，不能反映 Gateway 排隊、RS485 傳輸或現場控制器回覆時間；上線前仍須依前述流程量測實機。
+
+## 最近門禁事件 Sensor
+
+Node 02 的「最近門禁事件」Sensor 狀態為既有 SQLite 的事件總數。
+`events` attribute 依 `id` 由新到舊提供最多 100 筆，每筆包含
+`id`、`received_at`、`event_time_local`、`event_type`、`port`、`user_address`。
+Dashboard Card 可使用 `events[0]` 顯示最新事件，並逐筆呈現列表。
+`user_address` 是控制器使用者位址，姓名與實際通行結果需另有已確認資料才能呈現。
+
+啟動及 FIFO 保存成功後自動透過 executor 更新。
+可使用原生 `homeassistant.update_entity`，指定此 Sensor 的實際 Entity ID 手動重新整理。
+`events` 透過 `unrecorded_attributes` 排除 Recorder 儲存，總數仍可記錄。
+歷史明細從既有 `access_events` 資料表以唯讀連線查詢。
+資料庫不存在時顯示 0 與空列表，讀取失敗時 Sensor 顯示不可用，下次更新可恢復。

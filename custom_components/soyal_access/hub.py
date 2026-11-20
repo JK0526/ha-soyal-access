@@ -27,6 +27,7 @@ RECOVERY_POLLS = 2
 class Hub:
     def __init__(self, hass, entry):
         self.signal = f"{DOMAIN}_{entry.entry_id}"
+        self.events_signal = f"{self.signal}_events_saved"
         self.entry_id = entry.entry_id
         endpoint = repr((entry.data["host"], entry.data["port"])).encode()
         key = sha256(endpoint).hexdigest()
@@ -209,6 +210,7 @@ class Hub:
             await self._hass.async_add_executor_job(
                 self.fifo_storage.save_event, event, received_at
             )
+            async_dispatcher_send(self._hass, self.events_signal)
             # Commit first, then wait for a verified 0x21 poll before 0x37.
             self._fifo_delete_pending = True
             self._fifo_delete_waiting_for_poll = True

@@ -51,6 +51,11 @@
       "hold_open": {
         "name": "Hold open"
       }
+    },
+    "sensor": {
+      "access_event_history": {
+        "name": "Recent access events"
+      }
     }
   }
 }

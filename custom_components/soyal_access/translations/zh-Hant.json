@@ -51,6 +51,11 @@
       "hold_open": {
         "name": "常開"
       }
+    },
+    "sensor": {
+      "access_event_history": {
+        "name": "最近門禁事件"
+      }
     }
   }
 }

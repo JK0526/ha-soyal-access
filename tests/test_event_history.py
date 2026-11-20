@@ -13,12 +13,46 @@ from homeassistant.setup import async_setup_component
 
 from custom_components.soyal_access.const import DOMAIN
 from custom_components.soyal_access.fifo import parse_event
+from custom_components.soyal_access.fifo_storage import FifoStorage
 from custom_components.soyal_access.protocol import decode
 from tests.test_fifo_events import event_frame
 from tests.test_ha import gateway, setup_entry
 from tests.test_stage5 import eventually
 
 pytestmark = pytest.mark.usefixtures("enable_custom_integrations", "socket_enabled")
+
+
+def test_history_normalizes_only_legacy_invalid_user_pin(tmp_path):
+    storage = FifoStorage(tmp_path / "events.sqlite3")
+    storage.initialize()
+    event = {
+        "node_id": 2,
+        "event_code": 1,
+        "event_type": "unknown_event",
+        "event_time_local": None,
+        "port": 1,
+        "user_address": 42,
+        "raw_frame_hex": "01",
+    }
+    storage.save_event(event, "legacy-1")
+    storage.save_event({**event, "event_code": 2}, "legacy-2")
+    storage.save_event({**event, "event_type": "pin_access"}, "classified")
+
+    count, events = storage.read_history()
+
+    assert count == 3
+    assert [row["event_type"] for row in events] == [
+        "pin_access",
+        "unknown_event",
+        "invalid_user_pin",
+    ]
+    with sqlite3.connect(storage.path) as db:
+        assert (
+            db.execute(
+                "SELECT event_type FROM access_events WHERE event_code = 1"
+            ).fetchone()[0]
+            == "unknown_event"
+        )
 
 
 @pytest.fixture(autouse=True)

@@ -61,8 +61,13 @@ class FifoStorage:
             db.execute("BEGIN")
             count = db.execute("SELECT COUNT(*) FROM access_events").fetchone()[0]
             rows = db.execute(
-                """SELECT id, received_at, event_time_local, event_type,
+                """SELECT id, received_at, event_code, event_time_local, event_type,
                           port, user_address
                    FROM access_events ORDER BY id DESC LIMIT 100"""
             ).fetchall()
-            return count, [dict(row) for row in rows]
+            events = [dict(row) for row in rows]
+            for event in events:
+                event_code = event.pop("event_code")
+                if event_code == 0x01 and event["event_type"] == "unknown_event":
+                    event["event_type"] = "invalid_user_pin"
+            return count, events

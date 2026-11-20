@@ -4,7 +4,12 @@ from datetime import datetime
 
 from .protocol import Frame, ProtocolError, encode
 
-EVENT_TYPES = {0x0B: "card_access", 0x10: "egress", 0x1C: "pin_access"}
+EVENT_TYPES = {
+    0x01: "invalid_user_pin",
+    0x0B: "card_access",
+    0x10: "egress",
+    0x1C: "pin_access",
+}
 
 
 def parse_event(frame: Frame) -> dict:

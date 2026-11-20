@@ -6,7 +6,9 @@ from homeassistant.helpers import entity_registry as er
 from .const import DOMAIN, PLATFORMS
 from .hub import Hub
 
-_REMOVED_FIFO_ENTITIES = {
+_REMOVED_ENTITIES = {
+    ("button", "manual_query"),
+    ("sensor", "query_result"),
     ("button", "read_fifo_event"),
     ("button", "sync_one_fifo_event"),
     ("sensor", "fifo_read_result"),
@@ -15,8 +17,8 @@ _REMOVED_FIFO_ENTITIES = {
 }
 
 
-def _remove_legacy_fifo(hass, entry):
-    """Remove only the old FIFO registry entries for this config entry."""
+def _remove_legacy_features(hass, entry):
+    """Remove only the retired entity registry entries for this config entry."""
     data = dict(entry.data)
     for key in ("desired_auto_sync", "fifo_auto_sync"):
         data.pop(key, None)
@@ -24,7 +26,7 @@ def _remove_legacy_fifo(hass, entry):
         hass.config_entries.async_update_entry(entry, data=data)
 
     registry = er.async_get(hass)
-    for domain, suffix in _REMOVED_FIFO_ENTITIES:
+    for domain, suffix in _REMOVED_ENTITIES:
         unique_id = f"{entry.entry_id}:2:{suffix}"
         entity_id = registry.async_get_entity_id(domain, DOMAIN, unique_id)
         if (
@@ -36,7 +38,7 @@ def _remove_legacy_fifo(hass, entry):
 
 async def async_setup_entry(hass, entry):
     """Open one socket and expose its connection state."""
-    _remove_legacy_fifo(hass, entry)
+    _remove_legacy_features(hass, entry)
     hub = Hub(hass, entry)
     await hub.warn_legacy_uncertainty()
     entry.runtime_data = hub

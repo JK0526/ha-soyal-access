@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.translation import async_get_translations
 
 from custom_components.soyal_access.const import DOMAIN
 from custom_components.soyal_access.protocol import Frame, decode, encode
@@ -136,15 +137,7 @@ async def test_poll_spacing_priority_and_cleanup(hass):
         _, frame = await next_item(requests)
         assert frame == POLL
         await send(writer, IO)
-        assert hub.result == "not_queried"
         assert hub.transport.last_io == IO
-        manual = asyncio.create_task(hub.query())
-        _, frame = await next_item(requests)
-        assert frame == POLL
-        await send(writer, IO)
-        await manual
-        assert hub.result == "success"
-
         task = hub.poll_task
         assert await hass.config_entries.async_unload(entry.entry_id)
         assert task.done()
@@ -300,6 +293,12 @@ async def test_unlock_output_tracks_poll_only_and_resets_on_reload(hass):
         assert hass.states.get(entity).state == "unavailable"
         await validate(hub, writer, requests)
         assert hass.states.get(entity).state == "off"
+        registered = registry.async_get(entity)
+        prefix = (
+            f"component.{registered.platform}.entity."
+            f"{entity.split('.')[0]}.{registered.translation_key}.state"
+        )
+        translations = await async_get_translations(hass, "zh-Hant", "entity", [DOMAIN])
 
         async def poll(reply):
             assert (await next_item(requests))[1] == POLL
@@ -313,7 +312,11 @@ async def test_unlock_output_tracks_poll_only_and_resets_on_reload(hass):
             ("7E 09 00 03 02 73 10 00 18 85 25", "off"),
         ):
             await poll(bytes.fromhex(raw))
-            assert hass.states.get(entity).state == expected
+            state = hass.states.get(entity)
+            assert state.state == expected
+            assert translations[f"{prefix}.{state.state}"] == (
+                "解鎖中" if expected == "on" else "未解鎖"
+            )
         await poll(encode(Frame(0, 3, b"\x02\x00\xc1\xff\xab")))
         assert hass.states.get(entity).state == "on"
         with patch.object(hub, "notify", wraps=hub.notify) as notify:
@@ -372,7 +375,7 @@ async def test_invalid_poll_cannot_confirm_unlock_output(hass, monkeypatch, inva
         assert await hass.config_entries.async_unload(entry.entry_id)
 
 
-async def test_beta8_upgrade_preserves_disk_and_only_polls_io(hass, tmp_path):
+async def test_upgrade_removes_retired_entities_and_only_polls_io(hass, tmp_path):
     import sqlite3
 
     hass.config.config_dir = str(tmp_path)
@@ -386,11 +389,15 @@ async def test_beta8_upgrade_preserves_disk_and_only_polls_io(hass, tmp_path):
         )
 
         registry = er.async_get(hass)
+        registry.async_update_entity(
+            output_entity(hass, entry),
+            new_entity_id="binary_sensor.existing_unlock_output",
+        )
         old_entities = {
             item.unique_id: item.entity_id
             for item in er.async_entries_for_config_entry(registry, entry.entry_id)
         }
-        assert len(old_entities) >= 7
+        assert len(old_entities) == 5
         removed_entities = [
             registry.async_get_or_create(
                 platform,
@@ -400,6 +407,8 @@ async def test_beta8_upgrade_preserves_disk_and_only_polls_io(hass, tmp_path):
                 suggested_object_id=f"old_{suffix}",
             ).entity_id
             for platform, suffix in (
+                ("button", "manual_query"),
+                ("sensor", "query_result"),
                 ("button", "read_fifo_event"),
                 ("button", "sync_one_fifo_event"),
                 ("sensor", "fifo_read_result"),

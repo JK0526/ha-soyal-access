@@ -97,10 +97,6 @@ class Transport:
             writer.close()
             self._set_disconnected()
 
-    async def query_node02(self):
-        elapsed, _ = await self._exchange(_QUERY, expected={9: (3,)})
-        return elapsed
-
     async def poll_node02(self):
         _, frame = await self._exchange(_QUERY, expected={9: (3,), 5: (5,)})
         return frame if frame.code == 3 else None

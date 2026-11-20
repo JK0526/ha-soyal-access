@@ -35,27 +35,16 @@
         "name": "在線"
       },
       "unlock_output": {
-        "name": "主門解鎖輸出"
+        "name": "主門解鎖輸出",
+        "state": {
+          "on": "解鎖中",
+          "off": "未解鎖"
+        }
       }
     },
     "button": {
-      "manual_query": {
-        "name": "手動查詢"
-      },
       "pulse_open": {
         "name": "脈衝開門"
-      }
-    },
-    "sensor": {
-      "query_result": {
-        "name": "最近查詢結果",
-        "state": {
-          "not_queried": "尚未查詢",
-          "success": "查詢成功",
-          "timeout": "查詢逾時",
-          "communication_failed": "通訊失敗",
-          "invalid_response": "回應格式錯誤"
-        }
       }
     },
     "switch": {

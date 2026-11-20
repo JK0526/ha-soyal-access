@@ -35,27 +35,16 @@
         "name": "Online"
       },
       "unlock_output": {
-        "name": "Main Door Unlock Output"
+        "name": "Main Door Unlock Output",
+        "state": {
+          "on": "Unlocking",
+          "off": "Not unlocked"
+        }
       }
     },
     "button": {
-      "manual_query": {
-        "name": "Manual query"
-      },
       "pulse_open": {
         "name": "Pulse open"
-      }
-    },
-    "sensor": {
-      "query_result": {
-        "name": "Last query result",
-        "state": {
-          "not_queried": "Not queried",
-          "success": "Success",
-          "timeout": "Timed out",
-          "communication_failed": "Communication failed",
-          "invalid_response": "Invalid response"
-        }
       }
     },
     "switch": {

@@ -271,7 +271,6 @@ async def test_legacy_entry_registry_and_disk_are_preserved(hass, tmp_path):
 @pytest.mark.parametrize(
     ("domain", "key", "action", "tx"),
     [
-        ("button", "manual_query", "press", "7E 06 02 21 00 00 DC FF"),
         ("button", "pulse_open", "press", "7E 05 02 21 84 58 FF"),
         ("switch", "hold_open", "turn_on", "7E 05 02 21 82 5E 03"),
         ("switch", "hold_open", "turn_off", "7E 05 02 21 83 5F 05"),
@@ -297,9 +296,6 @@ async def test_legacy_entry_registry_and_disk_are_preserved(hass, tmp_path):
 async def test_node02_operations(hass, response, expected, domain, key, action, tx):
     from custom_components.soyal_access.protocol import Frame, encode
 
-    control = key != "manual_query"
-    if not control and response in {"ack", "nack"}:
-        expected = "invalid_response"
     requests = asyncio.Queue()
     peers = asyncio.Queue()
 
@@ -318,14 +314,6 @@ async def test_node02_operations(hass, response, expected, domain, key, action, 
         hub = entry.runtime_data
         writer = await next_item(peers)
         registry = er.async_get(hass)
-        button = registry.async_get_entity_id(
-            "button", DOMAIN, f"{entry.entry_id}:2:manual_query"
-        )
-        sensor = registry.async_get_entity_id(
-            "sensor", DOMAIN, f"{entry.entry_id}:2:query_result"
-        )
-        assert hass.states.get(button).state != "unavailable"
-        assert hass.states.get(sensor).state == "not_queried"
         pulse_button = registry.async_get_entity_id(
             "button", DOMAIN, f"{entry.entry_id}:2:pulse_open"
         )
@@ -361,7 +349,6 @@ async def test_node02_operations(hass, response, expected, domain, key, action, 
         task = asyncio.create_task(perform())
         assert await next_item(requests) == bytes.fromhex(tx)
         for operation in (
-            hub.query,
             hub.pulse,
             lambda: hub.set_hold_open(True),
             lambda: hub.set_hold_open(False),
@@ -396,7 +383,7 @@ async def test_node02_operations(hass, response, expected, domain, key, action, 
                 writer.close()
             case "disconnect":
                 writer.close()
-        if control and expected != "success":
+        if expected != "success":
             with pytest.raises(
                 HomeAssistantError,
                 match="rejected" if expected == "rejected" else "outcome unconfirmed",
@@ -405,25 +392,9 @@ async def test_node02_operations(hass, response, expected, domain, key, action, 
         else:
             await task
         await hass.async_block_till_done()
-        state = hass.states.get(sensor)
-        assert state.state == ("not_queried" if control else expected)
-        if control:
-            assert hub.can_pulse == (expected in {"success", "rejected"})
-            if expected not in {"success", "rejected"}:
-                assert hub.transport.tainted
-                assert hass.states.get(tcp_id(hass, entry)).state == STATE_OFF
-        elif expected == "success":
-            assert state.attributes["last_success"]
-            assert state.attributes["elapsed_ms"] > 0
-            assert hub.can_query
-            followup = asyncio.create_task(hub.query())
-            assert await next_item(requests) == bytes.fromhex("7E 06 02 21 00 00 DC FF")
-            writer.write(raw)
-            await followup
-            assert hub.result == "success"
-        else:
-            assert not hub.can_query
-            assert not hub.can_pulse
+        assert hub.can_pulse == (expected in {"success", "rejected"})
+        if expected not in {"success", "rejected"}:
+            assert hub.transport.tainted
             assert hass.states.get(tcp_id(hass, entry)).state == STATE_OFF
         if domain == "switch":
             if expected == "success":
@@ -449,7 +420,7 @@ async def test_node02_operations(hass, response, expected, domain, key, action, 
             )
             == hold_switch
         )
-        assert hass.states.get(button).state != "unavailable"
+        assert hass.states.get(pulse_button).state != "unavailable"
         if response == "timeout":
             reloaded = entry.runtime_data
             reloaded_peer.write(raw)

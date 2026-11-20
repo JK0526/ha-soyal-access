@@ -2,6 +2,12 @@
 
 版本來源為 [manifest.json](custom_components/soyal_access/manifest.json)。Git Tag 使用 `v` 前綴。預發佈使用 Semantic Versioning 的 `-beta.N` 或 `-rc.N`，正式版使用不帶預發佈後綴的版本。
 
+## v0.7.2
+
+- 移除手動查詢與最近查詢結果，升級時清理本 Config Entry 的舊實體註冊。
+- 主門解鎖輸出使用 HA 狀態翻譯顯示「解鎖中」與「未解鎖」，保留原始狀態與實體識別。
+- 保留 200 ms 自動輪詢及原有門禁控制。
+
 ## v0.7.1
 
 - 正式版移除 FIFO 背景同步、手動操作、診斷與復原服務，門禁通訊只使用 `0x21`。

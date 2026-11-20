@@ -8,7 +8,6 @@ from pathlib import Path
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_send
-from homeassistant.util import dt as dt_util
 
 from .const import DEFAULT_TIMEOUT, DOMAIN
 from .protocol import ProtocolError
@@ -47,9 +46,6 @@ class Hub:
             POLL_INTERVAL, entry.data.get("timeout", DEFAULT_TIMEOUT)
         )
         self.hold_open = None
-        self.result = "not_queried"
-        self.last_success = None
-        self.elapsed_ms = None
         self.transport = Transport(
             entry.data["host"],
             entry.data["port"],
@@ -154,33 +150,6 @@ class Hub:
     @property
     def can_query(self):
         return self._can_exchange and self._validation_polls == RECOVERY_POLLS
-
-    async def query(self):
-        if not self.can_query or self.busy:
-            raise HomeAssistantError(
-                "Node 02 query was not sent: Gateway unavailable, validating, or busy"
-            )
-        self.busy = True
-        try:
-            async with self._transaction:
-                if not self.can_query:
-                    raise NotSentError
-                elapsed = await self.transport.query_node02()
-        except NotSentError as err:
-            raise HomeAssistantError("Node 02 query was not sent") from err
-        except TimeoutError:
-            self.result = "timeout"
-        except ProtocolError:
-            self.result = "invalid_response"
-        except OSError:
-            self.result = "communication_failed"
-        else:
-            self.result = "success"
-            self.last_success = dt_util.utcnow().isoformat()
-            self.elapsed_ms = round(elapsed * 1000, 3)
-        finally:
-            self.busy = False
-            self.notify()
 
     @property
     def can_pulse(self):

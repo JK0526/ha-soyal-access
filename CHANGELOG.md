@@ -2,6 +2,12 @@
 
 版本來源為 [manifest.json](custom_components/soyal_access/manifest.json)。Git Tag 使用 `v` 前綴。預發佈使用 Semantic Versioning 的 `-beta.N` 或 `-rc.N`，正式版使用不帶預發佈後綴的版本。
 
+## v0.7.1-beta.8
+
+- 傳統 `0x25` FIFO 讀取在沒有已知回覆歧義時接受 Node 02 實測的 12-byte 狀態回覆。空佇列 ACK 回到 `idle`，NACK 維持拒絕。
+- 保留既有 `0x37`、`pop_uncertain`、SQLite 安全進度與門禁控制規則。
+- 已知限制：`0x25` 空佇列 ACK 與 `0x37` 成功 ACK 完全相同。離線注入重複 ACK 已重現跨交易誤配，可能誤報空佇列或移除成功。現場尚未證實會重複轉送 ACK。此預發行版供受控驗收，勿用於無人值守 FIFO 消費。
+
 ## v0.7.1-beta.7
 
 - 修正 FIFO 自動同步開關切換後，開關與同步狀態感測器可能不同步的問題。HA 會立即更新開關與 `desired_auto_sync`，並保留安全暫停原因。

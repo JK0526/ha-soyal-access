@@ -5,9 +5,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
-    async_add_entities(
-        [HoldOpenSwitch(entry.runtime_data), FifoSyncSwitch(entry.runtime_data)]
-    )
+    async_add_entities([HoldOpenSwitch(entry.runtime_data)])
 
 
 class HoldOpenSwitch(SwitchEntity):
@@ -41,26 +39,3 @@ class HoldOpenSwitch(SwitchEntity):
 
     async def async_turn_off(self, **kwargs):
         await self._hub.set_hold_open(False)
-
-
-class FifoSyncSwitch(HoldOpenSwitch):
-    _attr_translation_key = "fifo_auto_sync"
-    _attr_assumed_state = False
-
-    def __init__(self, hub):
-        super().__init__(hub)
-        self._attr_unique_id = f"{hub.entry_id}:2:fifo_auto_sync"
-
-    @property
-    def available(self):
-        return not self._hub.stopping
-
-    @property
-    def is_on(self):
-        return self._hub.fifo_sync.enabled
-
-    async def async_turn_on(self, **kwargs):
-        self._hub.fifo_sync.set_enabled(True)
-
-    async def async_turn_off(self, **kwargs):
-        self._hub.fifo_sync.set_enabled(False)

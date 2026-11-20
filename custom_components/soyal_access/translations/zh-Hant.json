@@ -44,12 +44,6 @@
       },
       "pulse_open": {
         "name": "脈衝開門"
-      },
-      "sync_one_fifo_event": {
-        "name": "同步並移除單筆 FIFO 事件"
-      },
-      "read_fifo_event": {
-        "name": "讀取 FIFO 最舊事件"
       }
     },
     "sensor": {
@@ -62,38 +56,11 @@
           "communication_failed": "通訊失敗",
           "invalid_response": "回應格式錯誤"
         }
-      },
-      "fifo_read_result": {
-        "name": "FIFO 讀取結果",
-        "state": {
-          "not_queried": "尚未查詢",
-          "empty": "FIFO 為空",
-          "event": "已讀取事件",
-          "nack": "控制器拒絕",
-          "timeout": "查詢逾時",
-          "invalid_response": "回應格式錯誤",
-          "communication_failed": "通訊失敗"
-        }
-      },
-      "fifo_sync_status": {
-        "name": "FIFO 同步狀態",
-        "state": {
-          "disabled": "已停用",
-          "waiting_for_gateway": "等待 Gateway 通訊驗證",
-          "idle": "閒置",
-          "syncing": "同步中",
-          "paused": "已暫停",
-          "storage_error": "儲存錯誤",
-          "pop_uncertain": "移除待確認"
-        }
       }
     },
     "switch": {
       "hold_open": {
         "name": "常開"
-      },
-      "fifo_auto_sync": {
-        "name": "FIFO 自動同步"
       }
     }
   }

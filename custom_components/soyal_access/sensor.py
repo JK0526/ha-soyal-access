@@ -8,8 +8,6 @@ async def async_setup_entry(hass, entry, async_add_entities):
     async_add_entities(
         [
             QueryResult(entry.runtime_data),
-            FifoResult(entry.runtime_data),
-            FifoSyncStatus(entry.runtime_data),
         ]
     )
 
@@ -49,52 +47,3 @@ class QueryResult(SensorEntity):
                 self.hass, self._hub.signal, self.async_write_ha_state
             )
         )
-
-
-class FifoResult(QueryResult):
-    _attr_translation_key = "fifo_read_result"
-    _unrecorded_attributes = frozenset({"raw_frame_hex"})
-
-    def __init__(self, hub):
-        super().__init__(hub)
-        self._attr_options = [
-            "not_queried",
-            "empty",
-            "event",
-            "nack",
-            "timeout",
-            "invalid_response",
-            "communication_failed",
-        ]
-
-    @property
-    def native_value(self):
-        return self._hub.fifo_result
-
-    @property
-    def extra_state_attributes(self):
-        return self._hub.fifo_attributes
-
-
-class FifoSyncStatus(QueryResult):
-    _attr_translation_key = "fifo_sync_status"
-
-    def __init__(self, hub):
-        super().__init__(hub)
-        self._attr_options = [
-            "disabled",
-            "waiting_for_gateway",
-            "idle",
-            "syncing",
-            "paused",
-            "storage_error",
-            "pop_uncertain",
-        ]
-
-    @property
-    def native_value(self):
-        return self._hub.fifo_sync.state
-
-    @property
-    def extra_state_attributes(self):
-        return self._hub.fifo_sync.attributes

@@ -64,11 +64,6 @@ class SoyalConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 ):
                     return self.async_abort(reason="already_configured")
                 updated = dict(entry.data) | data
-                if (entry.data["host"], entry.data["port"]) != (
-                    data["host"],
-                    data["port"],
-                ):
-                    updated["desired_auto_sync"] = False
                 return self.async_update_reload_and_abort(
                     entry, unique_id=key, title=key, data=updated
                 )

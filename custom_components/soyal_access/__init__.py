@@ -1,47 +1,42 @@
 """SOYAL Gateway connectivity."""
 
-import voluptuous as vol
-from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
-from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import config_validation as cv
-from homeassistant.helpers.service import async_register_admin_service
+from homeassistant.helpers import entity_registry as er
 
 from .const import DOMAIN, PLATFORMS
 from .hub import Hub
 
-CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+_REMOVED_FIFO_ENTITIES = {
+    ("button", "read_fifo_event"),
+    ("button", "sync_one_fifo_event"),
+    ("sensor", "fifo_read_result"),
+    ("sensor", "fifo_sync_status"),
+    ("switch", "fifo_auto_sync"),
+}
 
 
-async def async_setup(hass, config):
-    async def clear_fifo_pause(call):
-        if call.data["verified"] is not True:
-            raise HomeAssistantError(
-                "Verify the FIFO protocol issue before clearing the pause"
-            )
-        entry = hass.config_entries.async_get_entry(call.data["entry_id"])
+def _remove_legacy_fifo(hass, entry):
+    """Remove only the old FIFO registry entries for this config entry."""
+    data = dict(entry.data)
+    for key in ("desired_auto_sync", "fifo_auto_sync"):
+        data.pop(key, None)
+    if data != entry.data:
+        hass.config_entries.async_update_entry(entry, data=data)
+
+    registry = er.async_get(hass)
+    for domain, suffix in _REMOVED_FIFO_ENTITIES:
+        unique_id = f"{entry.entry_id}:2:{suffix}"
+        entity_id = registry.async_get_entity_id(domain, DOMAIN, unique_id)
         if (
-            entry is None
-            or entry.domain != DOMAIN
-            or entry.state != ConfigEntryState.LOADED
+            entity_id
+            and registry.async_get(entity_id).config_entry_id == entry.entry_id
         ):
-            raise HomeAssistantError("SOYAL config entry is not loaded")
-        await entry.runtime_data.fifo_sync.clear_pause()
-
-    async_register_admin_service(
-        hass,
-        DOMAIN,
-        "clear_fifo_pause",
-        clear_fifo_pause,
-        schema=vol.Schema(
-            {vol.Required("entry_id"): str, vol.Required("verified"): bool}
-        ),
-    )
-    return True
+            registry.async_remove(entity_id)
 
 
 async def async_setup_entry(hass, entry):
     """Open one socket and expose its connection state."""
+    _remove_legacy_fifo(hass, entry)
     hub = Hub(hass, entry)
     await hub.warn_legacy_uncertainty()
     entry.runtime_data = hub
@@ -53,7 +48,6 @@ async def async_setup_entry(hass, entry):
         raise
 
     hub.start_polling()
-    hub.fifo_sync.start()
 
     async def stop(_event):
         await hub.stop()

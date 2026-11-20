@@ -44,12 +44,6 @@
       },
       "pulse_open": {
         "name": "Pulse open"
-      },
-      "sync_one_fifo_event": {
-        "name": "Sync and remove one FIFO event"
-      },
-      "read_fifo_event": {
-        "name": "Read Oldest FIFO Event"
       }
     },
     "sensor": {
@@ -62,38 +56,11 @@
           "communication_failed": "Communication failed",
           "invalid_response": "Invalid response"
         }
-      },
-      "fifo_read_result": {
-        "name": "FIFO Read Result",
-        "state": {
-          "not_queried": "Not queried",
-          "empty": "Empty",
-          "event": "Event read",
-          "nack": "Rejected",
-          "timeout": "Timed out",
-          "invalid_response": "Invalid response",
-          "communication_failed": "Communication failed"
-        }
-      },
-      "fifo_sync_status": {
-        "name": "FIFO Sync Status",
-        "state": {
-          "disabled": "Disabled",
-          "waiting_for_gateway": "Waiting for gateway validation",
-          "idle": "Idle",
-          "syncing": "Syncing",
-          "paused": "Paused",
-          "storage_error": "Storage error",
-          "pop_uncertain": "Removal uncertain"
-        }
       }
     },
     "switch": {
       "hold_open": {
         "name": "Hold open"
-      },
-      "fifo_auto_sync": {
-        "name": "FIFO Auto Sync"
       }
     }
   }

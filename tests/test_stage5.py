@@ -20,7 +20,7 @@ NACK = encode(Frame(0, 5, b"\x02"))
 
 
 @asynccontextmanager
-async def gateway(*, allow_fifo=False, allow_pop=False):
+async def gateway():
     connections = asyncio.Queue()
     tasks = set()
 
@@ -36,13 +36,8 @@ async def gateway(*, allow_fifo=False, allow_pop=False):
                 frame = header + length + await reader.readexactly(length[0])
                 decoded = decode(frame)
                 assert decoded.node == 2
-                if (allow_fifo and decoded.code == 0x25) or (
-                    allow_pop and decoded.code == 0x37
-                ):
-                    assert decoded.payload == b""
-                else:
-                    assert decoded.code == 0x21
-                    assert decoded.payload in (b"\x00\x00", b"\x82", b"\x83", b"\x84")
+                assert decoded.code == 0x21
+                assert decoded.payload in (b"\x00\x00", b"\x82", b"\x83", b"\x84")
                 requests.put_nowait((asyncio.get_running_loop().time(), frame))
         except ConnectionResetError:
             pass
@@ -375,3 +370,83 @@ async def test_invalid_poll_cannot_confirm_unlock_output(hass, monkeypatch, inva
         await send(writer, bytes.fromhex("7E 09 00 03 02 73 50 00 18 C5 A5"))
         await eventually(lambda: hass.states.get(entity).state == "on")
         assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_beta8_upgrade_preserves_disk_and_only_polls_io(hass, tmp_path):
+    import sqlite3
+
+    hass.config.config_dir = str(tmp_path)
+    async with gateway() as (port, connections):
+        entry = await setup_entry(hass, port, timeout=0.3)
+        await next_item(connections)
+        assert await hass.config_entries.async_unload(entry.entry_id)
+        hass.config_entries.async_update_entry(
+            entry,
+            data={**entry.data, "desired_auto_sync": True, "fifo_auto_sync": True},
+        )
+
+        registry = er.async_get(hass)
+        old_entities = {
+            item.unique_id: item.entity_id
+            for item in er.async_entries_for_config_entry(registry, entry.entry_id)
+        }
+        assert len(old_entities) >= 7
+        removed_entities = [
+            registry.async_get_or_create(
+                platform,
+                DOMAIN,
+                f"{entry.entry_id}:2:{suffix}",
+                config_entry=entry,
+                suggested_object_id=f"old_{suffix}",
+            ).entity_id
+            for platform, suffix in (
+                ("button", "read_fifo_event"),
+                ("button", "sync_one_fifo_event"),
+                ("sensor", "fifo_read_result"),
+                ("sensor", "fifo_sync_status"),
+                ("switch", "fifo_auto_sync"),
+            )
+        ]
+        unrelated = registry.async_get_or_create(
+            "sensor",
+            "other_integration",
+            f"{entry.entry_id}:2:fifo_sync_status",
+            suggested_object_id="other_fifo_sync_status",
+        ).entity_id
+        db_path = tmp_path / "soyal_access" / f"{entry.entry_id}.sqlite3"
+        db_path.parent.mkdir()
+        with sqlite3.connect(db_path) as db:
+            db.execute("CREATE TABLE fifo_access_events (status TEXT)")
+            db.execute("INSERT INTO fifo_access_events VALUES ('pop_uncertain')")
+            db.execute("CREATE TABLE fifo_sync_progress (pending_event_id INTEGER)")
+            db.execute("INSERT INTO fifo_sync_progress VALUES (1)")
+        before = db_path.read_bytes()
+
+        for lifecycle in ("upgrade", "reload", "restart"):
+            if lifecycle == "reload":
+                assert await hass.config_entries.async_reload(entry.entry_id)
+            else:
+                if lifecycle == "restart":
+                    assert await hass.config_entries.async_unload(entry.entry_id)
+                assert await hass.config_entries.async_setup(entry.entry_id)
+            await hass.async_block_till_done()
+            hub = entry.runtime_data
+            writer, requests, _ = await next_item(connections)
+            await validate(hub, writer, requests)
+            for _ in range(6):
+                _, packet = await next_item(requests)
+                assert packet == POLL
+                await send(writer, IO)
+            assert registry.async_get(unrelated) is not None
+            assert all(
+                registry.async_get(entity) is None for entity in removed_entities
+            )
+            assert {
+                item.unique_id: item.entity_id
+                for item in er.async_entries_for_config_entry(registry, entry.entry_id)
+            } == old_entities
+            assert entry.data == {"host": "127.0.0.1", "port": port, "timeout": 0.3}
+            assert not hass.services.has_service(DOMAIN, "clear_fifo_pause")
+            assert db_path.read_bytes() == before
+        assert await hass.config_entries.async_unload(entry.entry_id)
+        assert db_path.read_bytes() == before

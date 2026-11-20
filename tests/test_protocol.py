@@ -48,7 +48,7 @@ class ProtocolTests(unittest.TestCase):
                 self.assertEqual(parser.feed(raw[1:]), [frame])
 
     def test_invalid_frames(self):
-        raw = encode(Frame(1, 0x25))
+        raw = encode(Frame(2, 0x21, b"\x00\x00"))
         for malformed in (
             raw[:-1],
             b"\x00" + raw[1:],

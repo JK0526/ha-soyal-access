@@ -2,6 +2,12 @@
 
 版本來源為 [manifest.json](custom_components/soyal_access/manifest.json)。Git Tag 使用 `v` 前綴。預發佈使用 Semantic Versioning 的 `-beta.N` 或 `-rc.N`，正式版使用不帶預發佈後綴的版本。
 
+## v0.7.1
+
+- 正式版移除 FIFO 背景同步、手動操作、診斷與復原服務，門禁通訊只使用 `0x21`。
+- 原地升級保留 Config Entry、Gateway 設定與非 FIFO 實體 ID。清除舊 FIFO 開關設定並移除對應實體註冊。歷史 SQLite 檔案與未決紀錄保持原狀。
+- 保留 200 ms I/O 輪詢、TCP 自動重連、主門解鎖輸出、手動查詢及既有門鎖控制。
+
 ## v0.7.1-beta.8
 
 - 傳統 `0x25` FIFO 讀取在沒有已知回覆歧義時接受 Node 02 實測的 12-byte 狀態回覆。空佇列 ACK 回到 `idle`，NACK 維持拒絕。

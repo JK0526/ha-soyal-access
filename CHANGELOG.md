@@ -2,6 +2,12 @@
 
 版本來源為 [manifest.json](custom_components/soyal_access/manifest.json)。Git Tag 使用 `v` 前綴。預發佈使用 Semantic Versioning 的 `-beta.N` 或 `-rc.N`，正式版使用不帶預發佈後綴的版本。
 
+## v0.8.0-beta.4
+
+- 修正 Home Assistant 2026.9 起 `via_device` 棄用造成整合實體加入失敗的問題；Node 02 改以 Gateway 設備 registry ID 建立父子關聯。
+- 最低 Home Assistant 版本提高至 2026.8.0，以使用 `via_device_id`。
+- FIFO、TCP、SQLite 與門禁控制功能不變。
+
 ## v0.8.0-beta.2
 
 - 修正 0x25／0x37 的 12-byte 狀態回覆驗證，允許即時 I/O 位元組變動，避免解鎖時合法 ACK 造成斷線。

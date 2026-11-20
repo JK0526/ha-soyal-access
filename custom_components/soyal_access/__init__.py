@@ -1,6 +1,7 @@
 """SOYAL Gateway connectivity."""
 
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 
 from .const import DOMAIN, PLATFORMS
@@ -39,7 +40,12 @@ def _remove_legacy_features(hass, entry):
 async def async_setup_entry(hass, entry):
     """Open one socket and expose its connection state."""
     _remove_legacy_features(hass, entry)
-    hub = Hub(hass, entry)
+    gateway_device = dr.async_get(hass).async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={(DOMAIN, entry.entry_id)},
+        name="SOYAL Gateway",
+    )
+    hub = Hub(hass, entry, gateway_device.id)
     await hub.warn_legacy_uncertainty()
     await hub.initialize_fifo_storage()
     entry.runtime_data = hub

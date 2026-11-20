@@ -25,21 +25,21 @@ RECOVERY_POLLS = 2
 
 
 class Hub:
-    def __init__(self, hass, entry):
+    def __init__(self, hass, entry, gateway_device_id):
         self.signal = f"{DOMAIN}_{entry.entry_id}"
         self.events_signal = f"{self.signal}_events_saved"
         self.entry_id = entry.entry_id
         endpoint = repr((entry.data["host"], entry.data["port"])).encode()
         key = sha256(endpoint).hexdigest()
         self._legacy_path = Path(hass.config.path(".storage", f"{DOMAIN}.{key}"))
+        self._hass = hass
         self.node_device = DeviceInfo(
             identifiers={(DOMAIN, f"{entry.entry_id}:2")},
-            via_device=(DOMAIN, entry.entry_id),
+            via_device_id=gateway_device_id,
             name="SOYAL AR-725E — Node 02",
             manufacturer="SOYAL",
             model="AR-725E",
         )
-        self._hass = hass
         self.fifo_storage = FifoStorage(
             hass.config.path("soyal_access_fifo", f"{entry.entry_id}.sqlite3")
         )

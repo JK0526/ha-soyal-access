@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 from homeassistant.components.recorder.db_schema import StateAttributes
 from homeassistant.core import Event
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.setup import async_setup_component
 
@@ -35,7 +36,20 @@ async def test_history_refresh_reload_and_recorder(hass):
         entity_id = er.async_get(hass).async_get_entity_id(
             "sensor", DOMAIN, f"{entry.entry_id}:2:access_event_history"
         )
+        gateway_device = dr.async_get(hass).async_get_device_by_identifier(
+            (DOMAIN, entry.entry_id), entry.entry_id
+        )
+        sensor_device = dr.async_get(hass).async_get_device_by_identifier(
+            (DOMAIN, f"{entry.entry_id}:2"), entry.entry_id
+        )
+        sensor_entity = er.async_get(hass).async_get(entity_id)
+        assert gateway_device is not None
+        assert sensor_device is not None
+        assert sensor_device.id != gateway_device.id
+        assert sensor_device.via_device_id == gateway_device.id
+        assert sensor_entity.device_id == sensor_device.id
         assert hass.states.get(entity_id).state == "0"
+        assert hass.states.get(entity_id).attributes["events"] == []
         event = parse_event(decode(event_frame()))
 
         def populate():

@@ -10,6 +10,9 @@ _QUERY = encode(Frame(2, 0x21, b"\x00\x00"))
 _FIFO = encode(Frame(2, 0x25))
 _FIFO_DELETE = encode(Frame(2, 0x37))
 _FIFO_STATUS = bytes.fromhex("02 34 10 00 18 73")
+# Payload byte 2 mirrors the live I/O byte (unlock output, inputs, ...), so it
+# changes with the door state. Compare every other byte exactly.
+_FIFO_STATUS_MASK = bytes.fromhex("FF FF 00 FF FF FF")
 _CONTROLS = {code: encode(Frame(2, 0x21, bytes([code]))) for code in (0x82, 0x83, 0x84)}
 
 
@@ -34,7 +37,7 @@ class Transport:
         self.pending = None
         self.tainted = False
         self._expected = {9: (3,)}
-        self._exact_payloads = {}
+        self._payload_masks = {}
         self.last_io = None
 
     async def start(self):
@@ -85,8 +88,10 @@ class Transport:
                     or not frame.payload
                     or frame.payload[0] != 2
                     or (
-                        buffer[1] in self._exact_payloads
-                        and frame.payload != self._exact_payloads[buffer[1]]
+                        buffer[1] in self._payload_masks
+                        and not self._matches_payload_mask(
+                            frame.payload, *self._payload_masks[buffer[1]]
+                        )
                     )
                 ):
                     raise ProtocolError("Unexpected SOYAL response type or source")
@@ -125,7 +130,7 @@ class Transport:
         _, frame = await self._exchange(
             _FIFO,
             expected={5: (4, 5), 10: (4, 5), 29: None},
-            exact_payloads={10: _FIFO_STATUS},
+            payload_masks={10: (_FIFO_STATUS, _FIFO_STATUS_MASK)},
         )
         return frame
 
@@ -134,11 +139,18 @@ class Transport:
         _, frame = await self._exchange(
             _FIFO_DELETE,
             expected={10: (4, 5)},
-            exact_payloads={10: _FIFO_STATUS},
+            payload_masks={10: (_FIFO_STATUS, _FIFO_STATUS_MASK)},
         )
         return frame.code
 
-    async def _exchange(self, packet, *, expected, exact_payloads=None):
+    @staticmethod
+    def _matches_payload_mask(payload, expected, mask):
+        return len(payload) == len(expected) == len(mask) and all(
+            actual & bits == value & bits
+            for actual, value, bits in zip(payload, expected, mask, strict=True)
+        )
+
+    async def _exchange(self, packet, *, expected, payload_masks=None):
         if (
             not self.connected
             or self._writer is None
@@ -149,7 +161,7 @@ class Transport:
             raise NotSentError("Gateway cannot accept a transaction")
         future = asyncio.get_running_loop().create_future()
         self._expected = expected
-        self._exact_payloads = exact_payloads or {}
+        self._payload_masks = payload_masks or {}
         self.pending = future
         started = monotonic()
         try:

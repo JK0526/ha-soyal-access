@@ -15,6 +15,7 @@ FIFO = encode(Frame(2, 0x25))
 DELETE = encode(Frame(2, 0x37))
 EMPTY = encode(Frame(0, 4, b"\x02"))
 STATUS_ACK = bytes.fromhex("7E 0A 00 04 02 34 10 00 18 73 B6 8B")
+STATUS_ACK_UNLOCKED = bytes.fromhex("7E 0A 00 04 02 34 50 00 18 73 F6 0B")
 STATUS_NACK = bytes.fromhex("7E 0A 00 05 02 34 10 00 18 73 B7 8D")
 
 
@@ -84,6 +85,53 @@ async def test_empty_queue_is_normal_and_does_not_delete(
         await send(writer, empty_reply)
         await next_fifo_request(requests, writer, POLL)
         assert event_count(hub) == 0
+        assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_unlocked_0x25_status_ack_keeps_tcp_session(hass, monkeypatch):
+    monkeypatch.setattr("custom_components.soyal_access.hub.FIFO_INTERVAL", 0.9)
+    async with gateway(allow_fifo=True, allow_pop=True) as (port, connections):
+        entry = await setup_entry(hass, port, timeout=0.5)
+        hub = entry.runtime_data
+        writer, requests, closed = await next_item(connections)
+        await validate(hub, writer, requests)
+        session_id = hub.transport.session_id
+
+        await next_fifo_request(requests, writer, FIFO)
+        await send(writer, STATUS_ACK_UNLOCKED)
+        await next_fifo_request(requests, writer, POLL)
+        await send(writer, bytes.fromhex("7E 09 00 03 02 73 50 00 18 C5 A5"))
+        await eventually(lambda: hub.unlock_output is True)
+        assert hub.transport.connected
+        assert hub.transport.session_id == session_id
+        assert not closed.is_set()
+        assert event_count(hub) == 0
+        assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_unlocked_0x37_status_ack_keeps_tcp_session(hass, monkeypatch):
+    monkeypatch.setattr("custom_components.soyal_access.hub.FIFO_INTERVAL", 0.9)
+    async with gateway(allow_fifo=True, allow_pop=True) as (port, connections):
+        entry = await setup_entry(hass, port, timeout=0.5)
+        hub = entry.runtime_data
+        writer, requests, closed = await next_item(connections)
+        await validate(hub, writer, requests)
+        session_id = hub.transport.session_id
+
+        await next_fifo_request(requests, writer, FIFO)
+        await send(writer, event_frame())
+        await eventually(lambda: hub._fifo_delete_waiting_for_poll)
+        await next_fifo_request(requests, writer, POLL)
+        await send(writer, IO)
+        await next_fifo_request(requests, writer, DELETE)
+        assert event_count(hub) == 1
+        await send(writer, STATUS_ACK_UNLOCKED)
+        await next_fifo_request(requests, writer, POLL)
+        await send(writer, bytes.fromhex("7E 09 00 03 02 73 50 00 18 C5 A5"))
+        await eventually(lambda: hub.unlock_output is True)
+        assert hub.transport.connected
+        assert hub.transport.session_id == session_id
+        assert not closed.is_set()
         assert await hass.config_entries.async_unload(entry.entry_id)
 
 
@@ -218,6 +266,27 @@ async def test_invalid_extended_empty_reply_reconnects_without_storage(
         assert await hass.config_entries.async_unload(entry.entry_id)
 
 
+async def test_0x37_rejects_status_change_outside_io_byte(hass, monkeypatch):
+    monkeypatch.setattr("custom_components.soyal_access.hub.FIFO_INTERVAL", 0.9)
+    async with gateway(allow_fifo=True, allow_pop=True) as (port, connections):
+        entry = await setup_entry(hass, port, timeout=0.25)
+        hub = entry.runtime_data
+        writer, requests, closed = await next_item(connections)
+        await validate(hub, writer, requests)
+
+        await next_fifo_request(requests, writer, FIFO)
+        await send(writer, event_frame())
+        await eventually(lambda: hub._fifo_delete_waiting_for_poll)
+        await next_fifo_request(requests, writer, POLL)
+        await send(writer, IO)
+        await next_fifo_request(requests, writer, DELETE)
+        invalid_ack = encode(Frame(0, 4, bytes.fromhex("02 34 50 00 18 72")))
+        await send(writer, invalid_ack)
+        await asyncio.wait_for(closed.wait(), 2)
+        assert event_count(hub) == 1
+        assert await hass.config_entries.async_unload(entry.entry_id)
+
+
 async def test_control_takes_priority_over_saved_event_delete(hass, monkeypatch):
     monkeypatch.setattr("custom_components.soyal_access.hub.FIFO_INTERVAL", 0.9)
     async with gateway(allow_fifo=True, allow_pop=True) as (port, connections):
@@ -237,4 +306,59 @@ async def test_control_takes_priority_over_saved_event_delete(hass, monkeypatch)
         await next_fifo_request(requests, writer, DELETE)
         await send(writer, STATUS_ACK)
         assert event_count(hub) == 1
+        assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+@pytest.mark.parametrize(
+    ("payload", "accepted"),
+    [
+        ("02 34 10 00 18 73", True),  # locked
+        ("02 34 50 00 18 73", True),  # unlock output on
+        ("02 34 12 00 18 73", True),  # other I/O bit set
+        ("02 34 52 00 18 73", True),  # unlocked and other I/O bit set
+        ("02 34 10 00 18 72", False),  # fixed byte changed
+        ("02 35 10 00 18 73", False),
+        ("03 34 10 00 18 73", False),
+        ("02 34 10 00 18", False),  # wrong length
+    ],
+)
+def test_status_payload_mask_ignores_only_the_io_byte(payload, accepted):
+    from custom_components.soyal_access import transport
+
+    assert (
+        transport.Transport._matches_payload_mask(
+            bytes.fromhex(payload),
+            transport._FIFO_STATUS,
+            transport._FIFO_STATUS_MASK,
+        )
+        is accepted
+    )
+
+
+async def test_storage_init_failure_disables_fifo_but_keeps_polling(hass, monkeypatch):
+    monkeypatch.setattr("custom_components.soyal_access.hub.FIFO_INTERVAL", 0.3)
+
+    def fail_initialize(_self):
+        raise OSError("read-only config directory")
+
+    monkeypatch.setattr(
+        "custom_components.soyal_access.fifo_storage.FifoStorage.initialize",
+        fail_initialize,
+    )
+    async with gateway(allow_fifo=True, allow_pop=True) as (port, connections):
+        entry = await setup_entry(hass, port, timeout=0.5)
+        hub = entry.runtime_data
+        assert not hub.fifo_enabled
+        writer, requests, _ = await next_item(connections)
+        await validate(hub, writer, requests)
+        try:
+            async with asyncio.timeout(1.5):
+                while True:
+                    _, current = await requests.get()
+                    assert current != FIFO
+                    if current == POLL:
+                        await send(writer, IO)
+        except TimeoutError:
+            pass
+        assert hub.can_query
         assert await hass.config_entries.async_unload(entry.entry_id)

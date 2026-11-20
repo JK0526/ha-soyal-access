@@ -46,6 +46,7 @@ class Hub:
         self._transaction = asyncio.Lock()
         self.poll_task = None
         self._fifo_task = None
+        self.fifo_enabled = True
         self._fifo_delete_pending = False
         self._fifo_delete_waiting_for_poll = False
         self.stopping = False
@@ -114,6 +115,8 @@ class Hub:
                 fifo_due = due + FIFO_INTERVAL
                 if not self.transport.connected:
                     continue
+                if self._fifo_delete_pending:
+                    self._fifo_delete_waiting_for_poll = True
 
             fifo_delete_due = (
                 loop.time()
@@ -124,8 +127,9 @@ class Hub:
                 and self._can_exchange
                 else float("inf")
             )
+            fifo_wake = float("inf") if self._fifo_delete_pending else fifo_due
             await asyncio.sleep(
-                max(0, min(due, fifo_due, fifo_delete_due) - loop.time())
+                max(0, min(due, fifo_wake, fifo_delete_due) - loop.time())
             )
             now = loop.time()
             if self._fifo_task is not None and self._fifo_task.done():
@@ -166,7 +170,9 @@ class Hub:
                 # creates a backlog of FIFO checks.
                 fifo_due = now + FIFO_INTERVAL
                 if (
-                    not self.busy
+                    self.fifo_enabled
+                    and self.can_query
+                    and not self.busy
                     and not self._transaction.locked()
                     and self._fifo_task is None
                 ):
@@ -176,12 +182,20 @@ class Hub:
 
     async def initialize_fifo_storage(self):
         """Create the new FIFO database without opening legacy databases."""
-        await self._hass.async_add_executor_job(self.fifo_storage.initialize)
+        try:
+            await self._hass.async_add_executor_job(self.fifo_storage.initialize)
+        except (OSError, sqlite3.Error) as err:
+            self.fifo_enabled = False
+            _LOGGER.error(
+                "SOYAL FIFO storage unavailable, event sync disabled "
+                "(door control and status are unaffected): %s",
+                err,
+            )
 
     async def _read_fifo_event(self):
         try:
             async with self._transaction:
-                if self.busy or not self._can_exchange:
+                if self.busy or not self.can_query:
                     return
                 frame = await self.transport.read_fifo_event()
             if frame.code == 4:

@@ -7,7 +7,7 @@ import pytest
 
 from custom_components.soyal_access.protocol import Frame, encode
 from tests.test_ha import next_item, setup_entry
-from tests.test_stage5 import IO, POLL, eventually, gateway, send, validate
+from tests.test_stage5 import IO, NACK, POLL, eventually, gateway, send, validate
 
 pytestmark = pytest.mark.usefixtures("enable_custom_integrations", "socket_enabled")
 
@@ -56,8 +56,11 @@ async def test_event_is_committed_before_delete_and_polling_continues(
 
         await next_fifo_request(requests, writer, FIFO)
         await send(writer, event_frame())
-        await next_fifo_request(requests, writer, DELETE)
+        await eventually(lambda: hub._fifo_delete_waiting_for_poll)
+        await next_fifo_request(requests, writer, POLL)
         assert event_count(hub) == 1
+        await send(writer, IO)
+        await next_fifo_request(requests, writer, DELETE)
         await send(writer, STATUS_ACK)
 
         await next_fifo_request(requests, writer, POLL)
@@ -121,6 +124,53 @@ async def test_delete_nack_does_not_count_as_success_or_repeat_delete(
         await send(writer, STATUS_NACK)
         await next_fifo_request(requests, writer, POLL)
         assert not hub._fifo_delete_pending
+        assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_poll_nack_keeps_delete_waiting_for_valid_poll(hass, monkeypatch):
+    monkeypatch.setattr("custom_components.soyal_access.hub.FIFO_INTERVAL", 0.9)
+    async with gateway(allow_fifo=True, allow_pop=True) as (port, connections):
+        entry = await setup_entry(hass, port, timeout=0.5)
+        hub = entry.runtime_data
+        writer, requests, _ = await next_item(connections)
+        await validate(hub, writer, requests)
+
+        await next_fifo_request(requests, writer, FIFO)
+        await send(writer, event_frame())
+        await eventually(lambda: hub._fifo_delete_waiting_for_poll)
+        await next_fifo_request(requests, writer, POLL)
+        await send(writer, NACK)
+        await eventually(lambda: hub._fifo_delete_waiting_for_poll)
+        assert hub._fifo_delete_pending
+        await next_fifo_request(requests, writer, POLL)
+        assert hub._fifo_delete_waiting_for_poll
+        await send(writer, IO)
+        await next_fifo_request(requests, writer, DELETE)
+        await send(writer, STATUS_ACK)
+        assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_poll_timeout_reconnects_and_validates_before_delete(hass, monkeypatch):
+    monkeypatch.setattr("custom_components.soyal_access.hub.FIFO_INTERVAL", 0.9)
+    monkeypatch.setattr("custom_components.soyal_access.hub.RECONNECT_DELAYS", (0.1,))
+    async with gateway(allow_fifo=True, allow_pop=True) as (port, connections):
+        entry = await setup_entry(hass, port, timeout=0.25)
+        hub = entry.runtime_data
+        writer, requests, closed = await next_item(connections)
+        await validate(hub, writer, requests)
+
+        await next_fifo_request(requests, writer, FIFO)
+        await send(writer, event_frame())
+        await eventually(lambda: hub._fifo_delete_waiting_for_poll)
+        await next_fifo_request(requests, writer, POLL)
+        await asyncio.wait_for(closed.wait(), 2)
+        assert hub._fifo_delete_pending
+        assert hub._fifo_delete_waiting_for_poll
+
+        new_writer, new_requests, _ = await next_item(connections)
+        await validate(hub, new_writer, new_requests)
+        await next_fifo_request(new_requests, new_writer, DELETE)
+        await send(new_writer, STATUS_ACK)
         assert await hass.config_entries.async_unload(entry.entry_id)
 
 

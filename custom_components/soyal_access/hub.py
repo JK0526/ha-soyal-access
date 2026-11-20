@@ -47,6 +47,7 @@ class Hub:
         self.poll_task = None
         self._fifo_task = None
         self._fifo_delete_pending = False
+        self._fifo_delete_waiting_for_poll = False
         self.stopping = False
         self.node_online = False
         self.unlock_output = None
@@ -117,6 +118,7 @@ class Hub:
             fifo_delete_due = (
                 loop.time()
                 if self._fifo_delete_pending
+                and not self._fifo_delete_waiting_for_poll
                 and not self.busy
                 and not self._transaction.locked()
                 and self._can_exchange
@@ -146,6 +148,8 @@ class Hub:
                             frame = None
                         if self._record_poll(frame):
                             backoff = 0
+                            if self._fifo_delete_pending:
+                                self._fifo_delete_waiting_for_poll = False
                 if loop.time() >= due:
                     due = loop.time() + POLL_INTERVAL
                 continue
@@ -153,9 +157,10 @@ class Hub:
             if not self._can_exchange:
                 continue
             if self._fifo_delete_pending:
-                if self.busy or self._transaction.locked():
-                    continue
-                await self._delete_fifo_event()
+                if not self._fifo_delete_waiting_for_poll:
+                    if self.busy or self._transaction.locked():
+                        continue
+                    await self._delete_fifo_event()
             elif now >= fifo_due:
                 # Completion-based cadence: a busy control or read never
                 # creates a backlog of FIFO checks.
@@ -190,22 +195,29 @@ class Hub:
             await self._hass.async_add_executor_job(
                 self.fifo_storage.save_event, event, received_at
             )
-            # Only a committed event can make the FIFO head eligible for 0x37.
+            # Commit first, then wait for a verified 0x21 poll before 0x37.
             self._fifo_delete_pending = True
+            self._fifo_delete_waiting_for_poll = True
         except (OSError, ProtocolError, sqlite3.Error, TimeoutError) as err:
             _LOGGER.warning("SOYAL Node 02 FIFO read/save failed: %s", err)
 
     async def _delete_fifo_event(self):
         async with self._transaction:
-            if self.busy or not self._can_exchange:
+            if (
+                self.busy
+                or self._fifo_delete_waiting_for_poll
+                or not self._can_exchange
+            ):
                 return
             try:
                 code = await self.transport.delete_fifo_event()
             except (OSError, ProtocolError, TimeoutError) as err:
                 self._fifo_delete_pending = False
+                self._fifo_delete_waiting_for_poll = False
                 _LOGGER.warning("SOYAL Node 02 FIFO delete failed: %s", err)
                 return
         self._fifo_delete_pending = False
+        self._fifo_delete_waiting_for_poll = False
         if code == 5:
             _LOGGER.warning("SOYAL Node 02 rejected FIFO delete (NACK)")
 

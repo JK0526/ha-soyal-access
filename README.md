@@ -101,3 +101,8 @@ Dashboard Card 可使用 `events[0]` 顯示最新事件，並逐筆呈現列表�
 `events` 透過 `unrecorded_attributes` 排除 Recorder 儲存，總數仍可記錄。
 歷史明細從既有 `access_events` 資料表以唯讀連線查詢。
 資料庫不存在時顯示 0 與空列表，讀取失敗時 Sensor 顯示不可用，下次更新可恢復。
+
+## SOYAL Dashboard
+
+深色 Lovelace 儀表板提供連線、常開控制、解鎖輸出、選填門磁及最近 100 筆 FIFO 事件。
+安裝工具會辨識現有實體並建立 Dashboard，詳見 [Dashboard 安裝與更新](dashboard/README.md)。

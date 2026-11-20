@@ -1,14 +1,14 @@
 # SOYAL Access Control
 
-`v0.7.2` 正式版提供 EP-E300-485 RAW TCP 連線、Node 02 連線及解鎖輸出監控、脈衝開門與常開控制。整合 domain 為 `soyal_access`。
+`v0.8.0-beta.1` 在 `v0.7.2` 基礎上加入背景 FIFO 事件同步；此版本為測試預發行版，現場效能與 Gateway 韌體相容性尚待驗收。整合 domain 為 `soyal_access`。
 
 ## HACS 安裝或更新
 
 1. 若 HACS 尚未有此套件，在自訂儲存庫新增 `https://github.com/JK0526/ha-soyal-access`，類型選 Integration。
-2. 開啟 SOYAL Access Control 的下載或重新下載選單，指定 `v0.7.2`，完成後重新啟動 Home Assistant。
+2. 開啟 SOYAL Access Control 的下載或重新下載選單，指定 `v0.8.0-beta.1`，完成後重新啟動 Home Assistant。
 3. 已有 SOYAL Config Entry 會沿用原設定。首次安裝從「設定 → 裝置與服務 → 新增整合」選 SOYAL Access Control，輸入 Host 與 TCP Port。
 
-從 beta.8 原地升級時，保留同一 Config Entry、Gateway 設定及現有門禁與狀態實體 ID。正式版移除 FIFO 同步、查詢、移除指令及相關實體。舊 SQLite（`<HA_CONFIG>/soyal_access/<entry_id>.sqlite3`）與歷史安全紀錄保持原狀，整合不再開啟該 SQLite。版本來源見 [manifest.json](custom_components/soyal_access/manifest.json)，歷史版本見 [CHANGELOG](CHANGELOG.md)。
+升級會保留同一 Config Entry、Gateway 設定及現有門禁與狀態實體 ID。FIFO 在背景自動執行，不新增 Home Assistant 實體。新的事件資料寫入 `<HA_CONFIG>/soyal_access_fifo/<entry_id>.sqlite3`；舊版 `<HA_CONFIG>/soyal_access/<entry_id>.sqlite3` 與歷史安全紀錄保持原狀，不會被開啟、覆寫或刪除。版本來源見 [manifest.json](custom_components/soyal_access/manifest.json)，歷史版本見 [CHANGELOG](CHANGELOG.md)。
 
 ## EP-E300-485 現場驗收
 
@@ -28,6 +28,7 @@
 | `binary_sensor.py` | 發布 Gateway TCP、Node 02 在線及主門解鎖輸出 |
 | `const.py`、`manifest.json`、翻譯與品牌資源 | 整合註冊與 HACS 包裝 |
 | `protocol.py` | SOYAL 原有編解碼 |
+| `fifo.py`、`fifo_storage.py` | 0x25 事件欄位解析與獨立 SQLite 保存 |
 
 ## Node 02 手動操作
 
@@ -67,3 +68,22 @@ SOYAL 回應沒有交易識別碼。新版會拒絕閒置時收到的非預期�
 感測器顯示控制器的解鎖輸出。實體鎖舌位置須現場確認。
 
 繁體中文介面中的「主門解鎖輸出」以「解鎖中」與「未解鎖」顯示卡機輸出。這項翻譯保留原有 `on`／`off`、Entity ID 與自動化語意。離線時顯示 HA 原生不可用狀態。升級會移除舊手動查詢按鈕與最近查詢結果感測器。
+
+## v0.8.0-beta.1 FIFO 同步驗收
+
+Hub 沿用單一背景工作、單一 Transport 和一筆在途交易。每個 200 ms 目標時點優先排入 0x21；不補送錯過的輪詢。0x25 每 2 秒最多檢查一次，只在輪詢空檔啟動。有效事件先由 executor 寫入 SQLite 並 Commit，再排入 0x37；空佇列視為正常，不寫資料、不送 0x37。門禁控制先設為忙碌，未開始的 FIFO 操作會讓出通訊時機。
+
+歷史程式與測試記錄的 Node 02 FIFO 事件為 31-byte frame（length 欄位 `0x1D`），事件 payload 為 25 bytes；已知事件碼 `0x0B`、`0x10`、`0x1C`，其餘事件碼保留原始值與封包。空佇列曾記錄 7-byte 短 ACK，也有精確比對的 12-byte status ACK：`7E 0A 00 04 02 34 10 00 18 73 B6 8B`。0x37 的歷史成功回覆使用同一個 status ACK；NACK 使用 response code `0x05`，並驗證相同 status payload。這些向量來自專案歷史，不取代目標 Gateway 韌體的現場封包確認。
+
+請量測無 FIFO、空佇列、有事件及 FIFO timeout 時的 0x21 平均、最大、P95 間隔與 FIFO 交易耗時。測試模擬結果只作離線排程檢查；實機結果須由目標 EP-E300-485／RS485 環境記錄。交易 timeout 會沿用現有 Transport 關閉 TCP 與退避重連，重連後先恢復 0x21；不自動重送 0x37。
+
+本機 Python 3.13 loopback 測試記錄（無 FIFO／空佇列／有事件各 14 個輪詢點，timeout 復原 7 個輪詢點；FIFO 設為 2 秒）：
+
+| 情境 | 0x21 平均 | 最大 | P95 | FIFO 交易 RTT |
+| --- | ---: | ---: | ---: | ---: |
+| 無 FIFO | 201.08 ms | 201.57 ms | 201.57 ms | — |
+| 空佇列 | 201.05 ms | 201.40 ms | 201.40 ms | 0.62 ms |
+| 有事件 | 200.96 ms | 201.36 ms | 201.36 ms | 0x25 0.60 ms；0x37 0.19 ms |
+| 0x37 timeout 復原後 | 201.23 ms | 201.34 ms | 201.34 ms | timeout 250 ms、測試退避 100 ms；斷線後首個 0x21 為 352.77 ms |
+
+這些數字是單機 TCP loopback 數據，不能反映 Gateway 排隊、RS485 傳輸或現場控制器回覆時間；上線前仍須依前述流程量測實機。

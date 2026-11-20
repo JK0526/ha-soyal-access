@@ -110,6 +110,7 @@ def test_public_hosting_event():
     verify_hosting_event([bytes.fromhex(case[-1]) for case in FINAL_RX_VECTORS])
 
 
+@pytest.mark.usefixtures("socket_enabled")
 def test_mixed_rx_over_loopback_tcp():
     packets = [bytes.fromhex(case[-1]) for case in FINAL_RX_VECTORS]
 

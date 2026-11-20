@@ -2,19 +2,24 @@
 
 import asyncio
 import logging
+import sqlite3
 from hashlib import sha256
 from pathlib import Path
 
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_send
+from homeassistant.util import dt as dt_util
 
 from .const import DEFAULT_TIMEOUT, DOMAIN
+from .fifo import parse_event
+from .fifo_storage import FifoStorage
 from .protocol import ProtocolError
 from .transport import NotSentError, Transport
 
 _LOGGER = logging.getLogger(__name__)
 POLL_INTERVAL = 0.2
+FIFO_INTERVAL = 2.0
 RECONNECT_DELAYS = (1, 2, 4, 8, 15, 30)
 RECOVERY_POLLS = 2
 
@@ -34,9 +39,14 @@ class Hub:
             model="AR-725E",
         )
         self._hass = hass
+        self.fifo_storage = FifoStorage(
+            hass.config.path("soyal_access_fifo", f"{entry.entry_id}.sqlite3")
+        )
         self.busy = False
         self._transaction = asyncio.Lock()
         self.poll_task = None
+        self._fifo_task = None
+        self._fifo_delete_pending = False
         self.stopping = False
         self.node_online = False
         self.unlock_output = None
@@ -75,6 +85,10 @@ class Hub:
 
     async def stop(self):
         self.stopping = True
+        if self._fifo_task is not None:
+            self._fifo_task.cancel()
+            await asyncio.gather(self._fifo_task, return_exceptions=True)
+            self._fifo_task = None
         if self.poll_task is not None:
             self.poll_task.cancel()
             await asyncio.gather(self.poll_task, return_exceptions=True)
@@ -86,6 +100,7 @@ class Hub:
     async def _poll_loop(self):
         loop = asyncio.get_running_loop()
         due = loop.time() + self._quiet_seconds
+        fifo_due = due + FIFO_INTERVAL
         backoff = 0
         while True:
             if not self.transport.connected:
@@ -95,23 +110,104 @@ class Hub:
                     continue
                 await self.transport.start()
                 due = loop.time() + self._quiet_seconds
+                fifo_due = due + FIFO_INTERVAL
                 if not self.transport.connected:
                     continue
 
-            await asyncio.sleep(max(0, due - loop.time()))
-            started = loop.time()
-            due = started + POLL_INTERVAL
-            if self.busy or not self._can_exchange or self._transaction.locked():
+            fifo_delete_due = (
+                loop.time()
+                if self._fifo_delete_pending
+                and not self.busy
+                and not self._transaction.locked()
+                and self._can_exchange
+                else float("inf")
+            )
+            await asyncio.sleep(
+                max(0, min(due, fifo_due, fifo_delete_due) - loop.time())
+            )
+            now = loop.time()
+            if self._fifo_task is not None and self._fifo_task.done():
+                await asyncio.gather(self._fifo_task, return_exceptions=True)
+                self._fifo_task = None
+
+            # 0x21 always wins when both schedules are due. Missed polls are
+            # skipped by scheduling the next poll from its actual start time.
+            if now >= due:
+                due = now + POLL_INTERVAL
+                if (
+                    not self.busy
+                    and self._can_exchange
+                    and not self._transaction.locked()
+                ):
+                    async with self._transaction:
+                        try:
+                            frame = await self.transport.poll_node02()
+                        except (OSError, ProtocolError):
+                            frame = None
+                        if self._record_poll(frame):
+                            backoff = 0
+                if loop.time() >= due:
+                    due = loop.time() + POLL_INTERVAL
                 continue
+
+            if not self._can_exchange:
+                continue
+            if self._fifo_delete_pending:
+                if self.busy or self._transaction.locked():
+                    continue
+                await self._delete_fifo_event()
+            elif now >= fifo_due:
+                # Completion-based cadence: a busy control or read never
+                # creates a backlog of FIFO checks.
+                fifo_due = now + FIFO_INTERVAL
+                if (
+                    not self.busy
+                    and not self._transaction.locked()
+                    and self._fifo_task is None
+                ):
+                    self._fifo_task = asyncio.create_task(
+                        self._read_fifo_event(), name="soyal_access_fifo"
+                    )
+
+    async def initialize_fifo_storage(self):
+        """Create the new FIFO database without opening legacy databases."""
+        await self._hass.async_add_executor_job(self.fifo_storage.initialize)
+
+    async def _read_fifo_event(self):
+        try:
             async with self._transaction:
-                try:
-                    frame = await self.transport.poll_node02()
-                except (OSError, ProtocolError):
-                    frame = None
-                if self._record_poll(frame):
-                    backoff = 0
-            if loop.time() >= due:
-                due = loop.time() + POLL_INTERVAL
+                if self.busy or not self._can_exchange:
+                    return
+                frame = await self.transport.read_fifo_event()
+            if frame.code == 4:
+                return
+            if frame.code == 5:
+                _LOGGER.warning("SOYAL Node 02 rejected FIFO read (NACK)")
+                return
+
+            event = parse_event(frame)
+            received_at = dt_util.utcnow().isoformat()
+            await self._hass.async_add_executor_job(
+                self.fifo_storage.save_event, event, received_at
+            )
+            # Only a committed event can make the FIFO head eligible for 0x37.
+            self._fifo_delete_pending = True
+        except (OSError, ProtocolError, sqlite3.Error, TimeoutError) as err:
+            _LOGGER.warning("SOYAL Node 02 FIFO read/save failed: %s", err)
+
+    async def _delete_fifo_event(self):
+        async with self._transaction:
+            if self.busy or not self._can_exchange:
+                return
+            try:
+                code = await self.transport.delete_fifo_event()
+            except (OSError, ProtocolError, TimeoutError) as err:
+                self._fifo_delete_pending = False
+                _LOGGER.warning("SOYAL Node 02 FIFO delete failed: %s", err)
+                return
+        self._fifo_delete_pending = False
+        if code == 5:
+            _LOGGER.warning("SOYAL Node 02 rejected FIFO delete (NACK)")
 
     def _record_poll(self, frame):
         valid = frame is not None

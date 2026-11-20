@@ -41,6 +41,7 @@ async def async_setup_entry(hass, entry):
     _remove_legacy_features(hass, entry)
     hub = Hub(hass, entry)
     await hub.warn_legacy_uncertainty()
+    await hub.initialize_fifo_storage()
     entry.runtime_data = hub
     try:
         await hub.transport.start()

@@ -2,6 +2,13 @@
 
 版本來源為 [manifest.json](custom_components/soyal_access/manifest.json)。Git Tag 使用 `v` 前綴。預發佈使用 Semantic Versioning 的 `-beta.N` 或 `-rc.N`，正式版使用不帶預發佈後綴的版本。
 
+## v0.8.0-beta.1
+
+- 在既有單一 Hub／Transport 交易排程加入背景 FIFO 讀取；Node 02 `0x21` 仍以 200 ms 目標週期優先，FIFO 檢查週期為 2 秒。
+- 0x25 事件先寫入獨立 SQLite 資料庫並完成 Commit，再送 0x37；SQLite 使用 HA executor，重複事件允許保留。
+- FIFO 空佇列不寫資料、不送刪除指令；逾時沿用既有 TCP 關閉與重連。
+- 離線測試與模擬效能數據不代表 SOYAL 控制器現場驗收，Gateway 韌體與 RS485 負載仍待實機確認。
+
 ## v0.7.2
 
 - 移除手動查詢與最近查詢結果，升級時清理本 Config Entry 的舊實體註冊。

@@ -7,6 +7,9 @@ from time import monotonic
 from .protocol import HEADER, Frame, ProtocolError, decode, encode
 
 _QUERY = encode(Frame(2, 0x21, b"\x00\x00"))
+_FIFO = encode(Frame(2, 0x25))
+_FIFO_DELETE = encode(Frame(2, 0x37))
+_FIFO_STATUS = bytes.fromhex("02 34 10 00 18 73")
 _CONTROLS = {code: encode(Frame(2, 0x21, bytes([code]))) for code in (0x82, 0x83, 0x84)}
 
 
@@ -31,6 +34,7 @@ class Transport:
         self.pending = None
         self.tainted = False
         self._expected = {9: (3,)}
+        self._exact_payloads = {}
         self.last_io = None
 
     async def start(self):
@@ -75,7 +79,16 @@ class Transport:
                 valid_code = (
                     frame.code not in (4, 5) if codes is None else frame.code in codes
                 )
-                if frame.node != 0 or not valid_code or frame.payload[0] != 2:
+                if (
+                    frame.node != 0
+                    or not valid_code
+                    or not frame.payload
+                    or frame.payload[0] != 2
+                    or (
+                        buffer[1] in self._exact_payloads
+                        and frame.payload != self._exact_payloads[buffer[1]]
+                    )
+                ):
                     raise ProtocolError("Unexpected SOYAL response type or source")
                 if buffer[1] == 9:
                     self.last_io = bytes(buffer)
@@ -107,7 +120,25 @@ class Transport:
         )
         return frame.code
 
-    async def _exchange(self, packet, *, expected):
+    async def read_fifo_event(self):
+        """Read the oldest FIFO event or a recognized empty/NACK response."""
+        _, frame = await self._exchange(
+            _FIFO,
+            expected={5: (4, 5), 10: (4, 5), 29: None},
+            exact_payloads={10: _FIFO_STATUS},
+        )
+        return frame
+
+    async def delete_fifo_event(self):
+        """Delete the FIFO head after its event has been committed locally."""
+        _, frame = await self._exchange(
+            _FIFO_DELETE,
+            expected={10: (4, 5)},
+            exact_payloads={10: _FIFO_STATUS},
+        )
+        return frame.code
+
+    async def _exchange(self, packet, *, expected, exact_payloads=None):
         if (
             not self.connected
             or self._writer is None
@@ -118,6 +149,7 @@ class Transport:
             raise NotSentError("Gateway cannot accept a transaction")
         future = asyncio.get_running_loop().create_future()
         self._expected = expected
+        self._exact_payloads = exact_payloads or {}
         self.pending = future
         started = monotonic()
         try:

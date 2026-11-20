@@ -15,13 +15,20 @@ from tests.test_ha import next_item, setup_entry
 
 pytestmark = pytest.mark.usefixtures("enable_custom_integrations", "socket_enabled")
 
+
+@pytest.fixture(autouse=True)
+def defer_background_fifo(monkeypatch):
+    """Keep existing Stage 5 tests scoped to the v0.7.2 feature surface."""
+    monkeypatch.setattr("custom_components.soyal_access.hub.FIFO_INTERVAL", 3600)
+
+
 POLL = bytes.fromhex("7E 06 02 21 00 00 DC FF")
 IO = bytes.fromhex("7E 09 00 03 02 73 10 00 18 85 25")
 NACK = encode(Frame(0, 5, b"\x02"))
 
 
 @asynccontextmanager
-async def gateway():
+async def gateway(*, allow_fifo=False, allow_pop=False):
     connections = asyncio.Queue()
     tasks = set()
 
@@ -37,8 +44,19 @@ async def gateway():
                 frame = header + length + await reader.readexactly(length[0])
                 decoded = decode(frame)
                 assert decoded.node == 2
-                assert decoded.code == 0x21
-                assert decoded.payload in (b"\x00\x00", b"\x82", b"\x83", b"\x84")
+                if decoded.code == 0x21:
+                    assert decoded.payload in (
+                        b"\x00\x00",
+                        b"\x82",
+                        b"\x83",
+                        b"\x84",
+                    )
+                elif (decoded.code == 0x25 and allow_fifo) or (
+                    decoded.code == 0x37 and allow_pop
+                ):
+                    assert decoded.payload == b""
+                else:
+                    raise AssertionError(f"Unexpected request: {decoded}")
                 requests.put_nowait((asyncio.get_running_loop().time(), frame))
         except ConnectionResetError:
             pass

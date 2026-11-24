@@ -50,11 +50,19 @@
     "switch": {
       "hold_open": {
         "name": "常開"
+      },
+      "hold_open_timeout_protection": {
+        "name": "常開超時保護"
       }
     },
     "sensor": {
       "access_event_history": {
         "name": "最近門禁事件"
+      }
+    },
+    "number": {
+      "hold_open_timeout": {
+        "name": "常開時間上限"
       }
     }
   }

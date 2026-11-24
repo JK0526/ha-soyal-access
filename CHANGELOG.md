@@ -2,6 +2,16 @@
 
 版本來源為 [manifest.json](custom_components/soyal_access/manifest.json)。Git Tag 使用 `v` 前綴。預發佈使用 Semantic Versioning 的 `-beta.N` 或 `-rc.N`，正式版使用不帶預發佈後綴的版本。
 
+## v0.8.0-beta.6
+
+- Node 02 新增原生 CONFIG Switch「常開超時保護」（預設 ON）與 BOX Number「常開時間上限」（預設 30 min，1–1440）。包含英文及繁體中文翻譯。
+- 獨立 timeout manager 由 Hub 管理，每筆 Entry 最多一個絕對期限 timer 與解除 task；重複常開、脈衝操作不延長期限，設定變更依原始常開時間重算。
+- 使用 HA Store 保存設定及已確認工作階段；Restart / Reload 恢復原期限，到期離線時等待既有連線與有效輪詢驗證。交易前寫入不確定 journal，避免 crash window 導致錯誤恢復或重播。
+- 超時解除沿用原有 Hub 交易鎖、busy 與 Transport 安全檢查。NACK / 結果不明不自動重送；保存失敗提供警告及恢復可用性屬性。
+- 既有常開 Switch 新增超時 attributes，不增加每秒倒數、Recorder 寫入、HA Helper、Automation、自訂前端或執行期第三方依賴。
+- TCP / RS485、200 ms 輪詢排程、FIFO 優先權、SQLite schema、歷史功能及既有 Entity ID / Unique ID 不變；不包含 HA 開門操作歷史。
+- README 補充原生 Tile Card YAML、重啟 / 離線 / 未確認交易限制與實機驗收步驟。實機驗收尚未執行。
+
 ## v0.8.0-beta.5
 
 - 新增 FIFO 事件碼 `0x01`：`invalid_user_pin`。

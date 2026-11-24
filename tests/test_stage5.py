@@ -415,7 +415,7 @@ async def test_upgrade_removes_retired_entities_and_only_polls_io(hass, tmp_path
             item.unique_id: item.entity_id
             for item in er.async_entries_for_config_entry(registry, entry.entry_id)
         }
-        assert len(old_entities) == 6
+        assert len(old_entities) == 8
         removed_entities = [
             registry.async_get_or_create(
                 platform,

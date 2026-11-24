@@ -50,11 +50,19 @@
     "switch": {
       "hold_open": {
         "name": "Hold open"
+      },
+      "hold_open_timeout_protection": {
+        "name": "Hold Open Timeout Protection"
       }
     },
     "sensor": {
       "access_event_history": {
         "name": "Recent access events"
+      }
+    },
+    "number": {
+      "hold_open_timeout": {
+        "name": "Hold Open Timeout"
       }
     }
   }

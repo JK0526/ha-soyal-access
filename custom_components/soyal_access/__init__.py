@@ -50,10 +50,11 @@ async def async_setup_entry(hass, entry):
     await hub.initialize_fifo_storage()
     entry.runtime_data = hub
     try:
+        await hub.hold_open_timeout.async_load()
         await hub.transport.start()
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     except BaseException:
-        await hub.transport.close()
+        await hub.stop()
         raise
 
     hub.start_polling()

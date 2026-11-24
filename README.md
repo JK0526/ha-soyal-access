@@ -1,11 +1,11 @@
 # SOYAL Access Control
 
-`v0.8.0-beta.2` 在 `v0.7.2` 基礎上加入背景 FIFO 事件同步；此版本為測試預發行版，現場效能與 Gateway 韌體相容性尚待驗收。整合 domain 為 `soyal_access`。
+`v0.8.0-beta.6` 新增常開超時保護，沿用 beta.5 的 TCP、200 ms 輪詢、FIFO 與最近門禁事件功能。此版本為測試預發行版，常開超時保護的現場驗收尚未執行。整合 domain 為 `soyal_access`。
 
 ## HACS 安裝或更新
 
 1. 若 HACS 尚未有此套件，在自訂儲存庫新增 `https://github.com/JK0526/ha-soyal-access`，類型選 Integration。
-2. 開啟 SOYAL Access Control 的下載或重新下載選單，指定 `v0.8.0-beta.2`，完成後重新啟動 Home Assistant。
+2. 開啟 SOYAL Access Control 的下載或重新下載選單，指定 `v0.8.0-beta.6`，完成後重新啟動 Home Assistant。
 3. 已有 SOYAL Config Entry 會沿用原設定。首次安裝從「設定 → 裝置與服務 → 新增整合」選 SOYAL Access Control，輸入 Host 與 TCP Port。
 
 升級會保留同一 Config Entry、Gateway 設定及現有門禁與狀態實體 ID。FIFO 在背景自動執行，不新增 Home Assistant 實體。新的事件資料寫入 `<HA_CONFIG>/soyal_access_fifo/<entry_id>.sqlite3`；舊版 `<HA_CONFIG>/soyal_access/<entry_id>.sqlite3` 與歷史安全紀錄保持原狀，不會被開啟、覆寫或刪除。版本來源見 [manifest.json](custom_components/soyal_access/manifest.json)，歷史版本見 [CHANGELOG](CHANGELOG.md)。
@@ -23,7 +23,9 @@
 | --- | --- |
 | `__init__.py` | HA 載入、重載、卸載與停止 |
 | `config_flow.py` | Host、Port 設定與重複端點檢查 |
-| `hub.py` | 每筆 Config Entry 持有一個 Transport |
+| `hub.py` | 每筆 Config Entry 持有一個 Transport 與常開超時管理器 |
+| `hold_open_timeout.py` | 原生 Store、常開工作階段、絕對期限與單次排程 |
+| `switch.py`、`number.py` | 常開命令狀態與兩項原生超時設定 |
 | `transport.py` | 建立 RAW TCP、驗證及配對回覆，關閉接收工作與 Socket |
 | `binary_sensor.py` | 發布 Gateway TCP、Node 02 在線及主門解鎖輸出 |
 | `const.py`、`manifest.json`、翻譯與品牌資源 | 整合註冊與 HACS 包裝 |
@@ -46,6 +48,88 @@ SOYAL 回應沒有交易識別碼。新版會拒絕閒置時收到的非預期�
 在 HACS 更新並重啟後，先確認 Gateway TCP 與脈衝開門，再於受控現場對 Node 02 執行一次「常開」，確認持續解鎖。接著執行一次「解除常開」，確認門禁恢復正常控制，並核對沒有重複動作。
 
 「常開」開關採用 assumed state，啟動或 Reload 後從 Unknown 開始。即使顯示 Unknown，仍可明確執行開啟或關閉，或透過 HA 的 `switch.turn_on`／`switch.turn_off` 操作該實體。收到合法的 I/O 或 ACK 回應後，開關才會顯示最後成功下達的命令。NACK 保留上一個成功命令。交易結果不明時，清除命令狀態並關閉 Session，開關因此暫時顯示不可用。這個開關沒有實體鎖舌、門磁或 Relay 回授，請在現場確認電鎖動作。
+
+## v0.8.0-beta.6 常開超時保護
+
+Node 02 裝置新增兩個 HA 原生設定實體，不需 Helper、Automation 或自訂前端。Gateway 離線時仍可調整設定，調整本身不會送出開門或解除常開指令；重新啟用已到期的已確認工作階段則會進入解除流程。
+
+| 實體 | 預設與範圍 | Unique ID |
+| --- | --- | --- |
+| 常開超時保護 / Hold Open Timeout Protection | ON；CONFIG；`mdi:shield-check` | `<entry_id>:2:hold_open_timeout_protection` |
+| 常開時間上限 / Hold Open Timeout | 30 min；1–1440；整數步進 1；BOX；CONFIG；`mdi:timer-cog-outline` | `<entry_id>:2:hold_open_timeout` |
+
+點選「常開時間上限」開啟更多資訊，以輸入框設定分鐘數，或呼叫原生 `number.set_value`。Entity ID 由 HA 裝置名稱、語言及使用者既有命名決定，請從 Node 02 裝置頁確認。既有常開 Switch 的 Entity ID、Unique ID、assumed state 與控制指令語意保留。
+
+### 計時與設定變更
+
+- 常開收到既有 Transport 驗證的成功回覆後才記錄 UTC 開始時間與絕對截止時間。脈衝開門不啟動或延長計時，常開失敗不建立工作階段。
+- 重複成功執行常開沿用原始開始時間，不延長期限。手動解除成功才清除工作階段；NACK 保留原有保護。
+- 常開中修改分鐘數，以原始開始時間重算期限。新期限已過時立即進入待解除流程。
+- 關閉保護取消未送出的排程，保留已確認的開始時間，不改變控制器狀態。重新啟用依原始時間恢復；沒有已確認工作階段時不推測常開，也不從短暫 unlock output ON 推定常開。
+- 停用或改設定無法撤回已送出的交易；交易仍依真實結果結束。手動控制與超時解除共用 Hub 的 busy 與交易鎖。
+
+### 持久化、重啟與異常
+
+每筆 Config Entry 以 HA 原生 Store 獨立保存至 `.storage/soyal_access.<entry_id>.hold_open_timeout`，使用 atomic write，設定與工作階段時間皆為 timezone-aware UTC。成功常開建立的原始期限會在 HA Restart / Integration Reload 後恢復剩餘時間，**不重新給予完整分鐘數，不自動執行常開**。常開 Switch 載入後仍從 Unknown 開始；恢復的工作階段只是之前成功交易的紀錄，不等於控制器或電鎖實體回授。
+
+期限已過但 Gateway / Node 離線時保持 `expired_pending`。Transport 完成原有靜默觀察、兩筆有效輪詢驗證且允許控制後，才透過既有 Hub 流程解除；未送出的暫時不可用可等待後續連線驗證，不使用高頻重試。NACK 標記 `failed` 並警告；已送出但逾時、斷線、無效回應或取消則標記 `uncertain`，不自動重送。切換保護或修改分鐘數不會清除 `failed` / `uncertain`。確認現場狀態及舊回覆去向後，明確手動解除成功才能清除該工作階段；再手動常開可建立新工作階段。
+
+每次常開 / 解除常開先完成一筆 `uncertain` 寫入，再送原有控制指令，收到確認後才保存結果。因此控制成功與最後保存之間若當機，恢復會保守標記不確定，不將中斷交易還原成成功或重播指令。日誌會警告磁碟保存失敗，`timeout_restore_safe: false` 表示最近保存或載入未成功。交易前的 journal 寫入失敗會在送出前拒絕常開 / 解除操作；脈衝開門與既有背景輪詢不依賴此 journal。交易後保存失敗時，本次記憶體中的已確認計時仍繼續，但不能保證重啟恢復。這兩筆小型非同步儲存會增加常開控制的本機磁碟等待，沒有額外網路往返；實機延遲須驗收。
+
+Store 的少量相容性包裝會檢查 HA 內部實際寫入完成，避免 Store 吞掉 WriteError 後被當成成功；升級 HA 時應執行磁碟失敗及關機保存測試。檔案 I/O 仍由 HA executor 執行，未使用 SQLite 或更動其 schema。
+
+**HA 主機關機、整合卸載或無法連線期間，無法保證在期限當下解除常開。** 此功能不能取代控制器本身的硬體安全機制。持久化也不能解決 SOYAL 缺少交易識別碼造成的舊回應歸屬限制。
+
+### 常開 Switch attributes
+
+| Attribute | 說明 |
+| --- | --- |
+| `timeout_enabled`、`timeout_minutes` | 目前保護設定 |
+| `timeout_active` | 已啟用且正在計時、等待解除或送出解除 |
+| `hold_open_started_at`、`hold_open_deadline` | 原始 UTC 開始及截止時間；無工作階段為 null |
+| `timeout_status` | `idle`、`disabled`、`active`、`expired_pending`、`releasing`、`failed`、`uncertain` |
+| `timeout_restore_safe` | 最近儲存 / 載入是否成功；不表示實體鎖狀態已確認 |
+
+正常流程：`idle → active → expired_pending → releasing → idle`。停用顯示 `disabled`；失敗 / 不確定狀態優先保留。超時資訊僅在設定、狀態或期限改變時發布，不每秒更新倒數，因此不增加每秒 Recorder 寫入。
+
+### 原生 Tile Card Dashboard
+
+將下列三個 Entity ID 換成 Node 02 裝置頁上的實際 ID，再貼到 Dashboard 的手動卡片。時間卡點選後使用 HA 原生 BOX 輸入框；未加入 Slider feature。
+
+```yaml
+type: vertical-stack
+cards:
+  - type: tile
+    entity: switch.soyal_ar_725e_node_02_hold_open
+    name: 常開
+    tap_action:
+      action: more-info
+    icon_tap_action:
+      action: toggle
+  - type: tile
+    entity: switch.soyal_ar_725e_node_02_hold_open_timeout_protection
+    name: 常開超時保護
+    tap_action:
+      action: more-info
+    icon_tap_action:
+      action: toggle
+  - type: tile
+    entity: number.soyal_ar_725e_node_02_hold_open_timeout
+    name: 常開時間上限（分鐘）
+    tap_action:
+      action: more-info
+```
+
+### 現場實機驗收（尚未執行）
+
+1. HACS 選取 `v0.8.0-beta.6` Pre-release 並重啟；確認版本、既有 Entity ID、FIFO 歷史與 Node 02 兩個新設定，預設 ON / 30 min，時間輸入為 BOX。
+2. 於可監看電鎖的受控時段，設為 1 分鐘後常開。記錄 started_at / deadline，確認成功後才開始計時；脈衝開門與再次常開不延長期限。到期只解除一次，現場確認電鎖恢復。
+3. 手動解除成功後確認計時取消。先設 2 分鐘、常開後等待一段時間，改為 1 分鐘，確認截止仍以原始開始時間計算；若已過期應進入解除。
+4. 常開期間停用保護，確認不立即改變電鎖；超過原期限後重新啟用，確認等待連線驗證後解除。無已確認工作階段時啟用，確認不送控制指令。
+5. 設為 2 分鐘並常開；期限前 Reload / Restart，確認原期限保留、Switch 仍為 assumed state，不自行常開。另測 HA 停機跨過期限，啟動且兩筆有效輪詢後解除，不補給完整時間。
+6. 常開後讓 Gateway 離線跨過期限，確認 `expired_pending`；恢復後先完成既有驗證再解除。觀察 TCP、200 ms 輪詢及 FIFO 同步，記錄控制回應、輪詢 P95 / 最大間隔與 journal 儲存延遲。
+7. 在可安全注入錯誤的測試環境驗證 NACK 為 `failed`、已送出結果不明為 `uncertain`，重連、Reload、切換設定皆不自動重送。確認現場與舊回應去向後再明確手動解除。
+8. Unload / Reload / HA Stop 後檢查舊 timer / task / socket 均收回；確認重載不重複解除。以測試用唯讀 / 滿磁碟環境驗證保存警告及 `timeout_restore_safe: false`，避免在正式門禁主機上直接製造磁碟故障。
 
 ## Stage 5 現場驗收
 

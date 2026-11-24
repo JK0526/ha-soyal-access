@@ -14,6 +14,7 @@ from homeassistant.util import dt as dt_util
 from .const import DEFAULT_TIMEOUT, DOMAIN
 from .fifo import parse_event
 from .fifo_storage import FifoStorage
+from .hold_open_timeout import HoldOpenTimeout
 from .protocol import ProtocolError
 from .transport import NotSentError, Transport
 
@@ -66,6 +67,8 @@ class Hub:
             self.notify,
         )
 
+        self.hold_open_timeout = HoldOpenTimeout(hass, self)
+
     async def warn_legacy_uncertainty(self):
         exists = await self._hass.async_add_executor_job(self._legacy_path.exists)
         if exists:
@@ -80,6 +83,7 @@ class Hub:
             self.unlock_output = None
             self._validation_polls = 0
         async_dispatcher_send(self._hass, self.signal)
+        self.hold_open_timeout.ready()
 
     def start_polling(self):
         self.poll_task = asyncio.create_task(
@@ -88,6 +92,7 @@ class Hub:
 
     async def stop(self):
         self.stopping = True
+        await self.hold_open_timeout.async_stop()
         if self._fifo_task is not None:
             self._fifo_task.cancel()
             await asyncio.gather(self._fifo_task, return_exceptions=True)
@@ -99,6 +104,7 @@ class Hub:
         await self.transport.close()
         async with self._transaction:
             pass
+        await self.hold_open_timeout.async_flush()
 
     async def _poll_loop(self):
         loop = asyncio.get_running_loop()
@@ -285,35 +291,63 @@ class Hub:
     async def set_hold_open(self, enabled: bool):
         await self._control(0x82 if enabled else 0x83, "hold open", hold_open=enabled)
 
-    async def _control(self, action, label, *, hold_open=None):
+    async def _control(self, action, label, *, hold_open=None, timeout_token=None):
         if not self.can_pulse or self.busy:
             raise HomeAssistantError(
                 f"Node 02 {label} was not sent: Gateway unavailable, validating, or busy"
             )
         self.busy = True
         sent = False
+        prepared = False
+        outcome = "not_sent"
         try:
             async with self._transaction:
                 if not self.can_pulse:
                     raise NotSentError
+                if hold_open is not None:
+                    prepared = await self.hold_open_timeout.async_prepare(
+                        automatic_token=timeout_token
+                    )
+                    if not prepared:
+                        return
+                    # Settings/stop may change while the write-ahead save awaits I/O.
+                    if (
+                        timeout_token is not None
+                        and not self.hold_open_timeout.can_release(timeout_token)
+                    ):
+                        return
+                    if not self.can_pulse or self._hass.is_stopping:
+                        raise NotSentError
                 sent = True
                 code = await self.transport.control_node02(action)
             if code == 5:
+                outcome = "nack"
                 raise HomeAssistantError(f"Node 02 rejected the {label} (NACK)")
+            outcome = "success"
             if hold_open is not None:
                 self.hold_open = hold_open
         except NotSentError as err:
+            outcome = "not_sent"
             raise HomeAssistantError(f"Node 02 {label} was not sent") from err
         except (TimeoutError, OSError, ProtocolError) as err:
+            outcome = "uncertain"
             if hold_open is not None:
                 self.hold_open = None
             raise HomeAssistantError(
                 f"Node 02 {label} outcome unconfirmed ({type(err).__name__})"
             ) from err
         except asyncio.CancelledError:
+            outcome = "uncertain" if sent else "not_sent"
             if sent and hold_open is not None:
                 self.hold_open = None
             raise
         finally:
-            self.busy = False
-            self.notify()
+            try:
+                if hold_open is not None:
+                    # Also settles cancellation during the write-ahead save.
+                    await self.hold_open_timeout.async_complete(
+                        outcome, enabled=hold_open, automatic=timeout_token is not None
+                    )
+            finally:
+                self.busy = False
+                self.notify()

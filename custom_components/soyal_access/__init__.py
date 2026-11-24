@@ -37,6 +37,32 @@ def _remove_legacy_features(hass, entry):
             registry.async_remove(entity_id)
 
 
+def _remove_inactive_nodes(hass, entry, hub):
+    """Remove registry entries belonging to this entry's former stations."""
+    devices = dr.async_get(hass)
+    entities = er.async_get(hass)
+    prefix = f"{entry.entry_id}:"
+
+    def is_inactive_node(identifier):
+        node = identifier.removeprefix(prefix)
+        return (
+            identifier.startswith(prefix)
+            and node.isdecimal()
+            and int(node) != hub.node_id
+        )
+
+    for entity in er.async_entries_for_config_entry(entities, entry.entry_id):
+        node_uid = entity.unique_id.rpartition(":")[0]
+        if entity.platform == DOMAIN and is_inactive_node(node_uid):
+            entities.async_remove(entity.entity_id)
+    for device in dr.async_entries_for_config_entry(devices, entry.entry_id):
+        if any(
+            domain == DOMAIN and is_inactive_node(uid)
+            for domain, uid in device.identifiers
+        ):
+            devices.async_remove_device(device.id)
+
+
 async def async_setup_entry(hass, entry):
     """Open one socket and expose its connection state."""
     _remove_legacy_features(hass, entry)
@@ -53,6 +79,7 @@ async def async_setup_entry(hass, entry):
         await hub.hold_open_timeout.async_load()
         await hub.transport.start()
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+        _remove_inactive_nodes(hass, entry, hub)
     except BaseException:
         await hub.stop()
         raise

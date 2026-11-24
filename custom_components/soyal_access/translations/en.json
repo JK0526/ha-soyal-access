@@ -6,7 +6,8 @@
         "description": "The integration opens a TCP connection when loaded.",
         "data": {
           "host": "Gateway host",
-          "port": "TCP port"
+          "port": "TCP port",
+          "node_id": "Node ID"
         }
       },
       "reconfigure": {
@@ -14,16 +15,20 @@
         "description": "The integration opens a TCP connection when loaded.",
         "data": {
           "host": "Gateway host",
-          "port": "TCP port"
+          "port": "TCP port",
+          "node_id": "Node ID"
         }
       }
     },
     "error": {
-      "invalid_host": "Enter a valid IP or hostname."
+      "invalid_host": "Enter a valid IP or hostname.",
+      "invalid_node_id": "Enter an integer node ID from 1 to 254."
     },
     "abort": {
       "already_configured": "This gateway is already configured.",
-      "reconfigure_successful": "Gateway configuration updated."
+      "reconfigure_successful": "Gateway configuration updated.",
+      "node_change_unavailable": "Load the integration and confirm the current node’s hold-open state before changing the node ID.",
+      "node_change_hold_open": "A control operation or unresolved hold-open session exists. Check the door and successfully release hold-open before changing the node ID."
     }
   },
   "entity": {

@@ -1,4 +1,4 @@
-"""Gateway connectivity and Node 02 read-only sensors."""
+"""Gateway connectivity and the configured node read-only sensors."""
 
 from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass,
@@ -62,7 +62,7 @@ class NodeOnline(SoyalBinarySensor):
 
     def __init__(self, entry_id, hub):
         super().__init__(hub)
-        self._attr_unique_id = f"{entry_id}:2:node_online"
+        self._attr_unique_id = f"{hub.node_uid}:node_online"
         self._attr_device_info = hub.node_device
 
     @property
@@ -75,7 +75,7 @@ class UnlockOutput(SoyalBinarySensor):
 
     def __init__(self, entry_id, hub):
         super().__init__(hub)
-        self._attr_unique_id = f"{entry_id}:2:unlock_output"
+        self._attr_unique_id = f"{hub.node_uid}:unlock_output"
         self._attr_device_info = hub.node_device
 
     @property

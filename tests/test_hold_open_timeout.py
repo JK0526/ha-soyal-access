@@ -98,7 +98,7 @@ async def rig(hass, monkeypatch):
         hub.transport = SimpleNamespace(
             connected=online,
             tainted=False,
-            control_node02=AsyncMock(return_value=4),
+            control_node=AsyncMock(return_value=4),
             close=AsyncMock(),
         )
         hub._validation_polls = 2 if online else 0
@@ -143,15 +143,15 @@ async def test_defaults_success_pulse_repeat_manual_release(rig):
     assert not rig.clock.active
     rig.clock.advance(minutes=60)
     await settle(manager)
-    assert hub.transport.control_node02.call_count == 4
+    assert hub.transport.control_node.call_count == 4
 
 
 @pytest.mark.parametrize("failure", [5, NotSentError(), TimeoutError()])
 async def test_hold_failure_never_starts_session(rig, failure):
     if isinstance(failure, int):
-        rig.hub.transport.control_node02.return_value = failure
+        rig.hub.transport.control_node.return_value = failure
     else:
-        rig.hub.transport.control_node02.side_effect = failure
+        rig.hub.transport.control_node.side_effect = failure
     with pytest.raises(HomeAssistantError):
         await rig.hub.set_hold_open(True)
     assert rig.manager.started_at is None
@@ -159,19 +159,19 @@ async def test_hold_failure_never_starts_session(rig, failure):
     rig.clock.advance(minutes=100)
     rig.hub.notify()
     await settle(rig.manager)
-    assert rig.hub.transport.control_node02.call_count == 1
+    assert rig.hub.transport.control_node.call_count == 1
 
 
 async def test_timeout_releases_exactly_once(rig):
     await rig.hub.set_hold_open(True)
     rig.clock.advance(minutes=30)
     await settle(rig.manager)
-    assert rig.hub.transport.control_node02.call_args_list[-1].args == (0x83,)
+    assert rig.hub.transport.control_node.call_args_list[-1].args == (0x83,)
     assert rig.manager.status == "idle" and rig.hub.hold_open is False
     for _ in range(10):
         rig.hub.notify()
     rig.clock.advance(minutes=60)
-    assert rig.hub.transport.control_node02.call_count == 2
+    assert rig.hub.transport.control_node.call_count == 2
     assert not rig.clock.active
 
 
@@ -185,7 +185,7 @@ async def test_minutes_use_original_start_and_past_deadline(rig):
     await rig.manager.async_configure(minutes=5)
     await settle(rig.manager)
     assert rig.manager.status == "idle"
-    assert rig.hub.transport.control_node02.call_count == 2
+    assert rig.hub.transport.control_node.call_count == 2
 
 
 async def test_disable_reenable_and_unknown_output(rig):
@@ -194,7 +194,7 @@ async def test_disable_reenable_and_unknown_output(rig):
     await rig.manager.async_configure(enabled=False)
     assert rig.manager.status == "disabled" and not rig.clock.active
     rig.clock.advance(minutes=31)
-    assert rig.hub.transport.control_node02.call_count == 1
+    assert rig.hub.transport.control_node.call_count == 1
     await rig.manager.async_configure(enabled=True)
     assert rig.manager.deadline == deadline
     await settle(rig.manager)
@@ -203,7 +203,7 @@ async def test_disable_reenable_and_unknown_output(rig):
     await rig.manager.async_configure(enabled=False)
     await rig.manager.async_configure(enabled=True)
     assert rig.manager.started_at is None
-    assert rig.hub.transport.control_node02.call_count == 2
+    assert rig.hub.transport.control_node.call_count == 2
 
 
 @pytest.mark.parametrize("elapsed", [10, 40])
@@ -225,11 +225,11 @@ async def test_reload_restores_remaining_deadline_and_waits_validation(rig, elap
     hub._validation_polls = 1
     hub.notify()
     await settle(manager)
-    hub.transport.control_node02.assert_not_called()
+    hub.transport.control_node.assert_not_called()
     hub._validation_polls = 2
     hub.notify()
     await settle(manager)
-    hub.transport.control_node02.assert_awaited_once_with(0x83)
+    hub.transport.control_node.assert_awaited_once_with(0x83)
     assert manager.status == "idle"
 
 
@@ -240,7 +240,7 @@ async def test_offline_pending_then_reconnect(rig):
     rig.clock.advance(minutes=31)
     assert rig.manager.status == "expired_pending"
     assert rig.manager._task is None
-    assert rig.hub.transport.control_node02.call_count == 1
+    assert rig.hub.transport.control_node.call_count == 1
     rig.hub.transport.connected = True
     rig.hub._validation_polls = 2
     rig.hub.notify()
@@ -254,9 +254,9 @@ async def test_release_failure_never_automatically_retries_even_after_restart(
 ):
     await rig.hub.set_hold_open(True)
     if isinstance(error, int):
-        rig.hub.transport.control_node02.return_value = error
+        rig.hub.transport.control_node.return_value = error
     else:
-        rig.hub.transport.control_node02.side_effect = error
+        rig.hub.transport.control_node.side_effect = error
     rig.clock.advance(minutes=30)
     await settle(rig.manager)
     assert rig.manager.status == status
@@ -264,28 +264,28 @@ async def test_release_failure_never_automatically_retries_even_after_restart(
     for _ in range(20):
         rig.hub.notify()
     await settle(rig.manager)
-    assert rig.hub.transport.control_node02.call_count == 2
+    assert rig.hub.transport.control_node.call_count == 2
     await rig.hub.stop()
     hub = await rig.create()
     for _ in range(20):
         hub.notify()
     await settle(hub.hold_open_timeout)
     assert hub.hold_open_timeout.status == status
-    hub.transport.control_node02.assert_not_called()
+    hub.transport.control_node.assert_not_called()
     await hub.hold_open_timeout.async_configure(enabled=False)
     await hub.hold_open_timeout.async_configure(enabled=True)
-    hub.transport.control_node02.assert_not_called()
+    hub.transport.control_node.assert_not_called()
 
 
 async def test_unsent_release_is_pending_without_busy_retry_loop(rig):
     await rig.hub.set_hold_open(True)
-    rig.hub.transport.control_node02.side_effect = NotSentError()
+    rig.hub.transport.control_node.side_effect = NotSentError()
     rig.clock.advance(minutes=30)
     await settle(rig.manager)
     assert rig.manager.status == "expired_pending"
-    assert rig.hub.transport.control_node02.call_count == 2
+    assert rig.hub.transport.control_node.call_count == 2
     # A later successful readiness transition can safely retry an unsent command.
-    rig.hub.transport.control_node02.side_effect = None
+    rig.hub.transport.control_node.side_effect = None
     rig.hub.notify()
     await settle(rig.manager)
     assert rig.manager.status == "idle"
@@ -294,7 +294,7 @@ async def test_unsent_release_is_pending_without_busy_retry_loop(rig):
 async def test_manual_release_nack_retains_timer(rig):
     await rig.hub.set_hold_open(True)
     deadline = rig.manager.deadline
-    rig.hub.transport.control_node02.return_value = 5
+    rig.hub.transport.control_node.return_value = 5
     with pytest.raises(HomeAssistantError, match="NACK"):
         await rig.hub.set_hold_open(False)
     assert rig.manager.deadline == deadline
@@ -319,7 +319,7 @@ async def test_manual_release_wins_race_and_stale_callback_cannot_release_new_se
     stale(rig.clock.now)
     await settle(rig.manager)
     assert rig.manager.deadline == deadline and rig.manager.status == "active"
-    assert rig.hub.transport.control_node02.call_count == 3
+    assert rig.hub.transport.control_node.call_count == 3
 
 
 async def test_disable_queued_timeout_cancels_unsent_release(rig):
@@ -332,7 +332,7 @@ async def test_disable_queued_timeout_cancels_unsent_release(rig):
     rig.hub._transaction.release()
     await settle(rig.manager)
     assert rig.manager.status == "disabled"
-    assert rig.hub.transport.control_node02.call_count == 1
+    assert rig.hub.transport.control_node.call_count == 1
 
 
 async def test_disable_sent_release_preserves_actual_outcome(rig):
@@ -344,7 +344,7 @@ async def test_disable_sent_release_preserves_actual_outcome(rig):
         await finish.wait()
         return 4
 
-    rig.hub.transport.control_node02.side_effect = exchange
+    rig.hub.transport.control_node.side_effect = exchange
     rig.clock.advance(minutes=30)
     await sent.wait()
     assert rig.manager.status == "releasing"
@@ -365,7 +365,7 @@ async def test_unload_cancels_inflight_release_and_journals_uncertainty(rig):
         sent.set()
         await asyncio.Event().wait()
 
-    rig.hub.transport.control_node02.side_effect = exchange
+    rig.hub.transport.control_node.side_effect = exchange
     rig.clock.advance(minutes=30)
     await sent.wait()
     task = rig.manager._task
@@ -377,7 +377,7 @@ async def test_unload_cancels_inflight_release_and_journals_uncertainty(rig):
     hub = await rig.create()
     hub.notify()
     await settle(hub.hold_open_timeout)
-    hub.transport.control_node02.assert_not_called()
+    hub.transport.control_node.assert_not_called()
 
 
 async def test_write_ahead_failure_rejects_control_and_post_ack_failure_is_not_recoverable(
@@ -386,7 +386,7 @@ async def test_write_ahead_failure_rejects_control_and_post_ack_failure_is_not_r
     rig.store.fail = True
     with pytest.raises(HomeAssistantError, match="not sent"):
         await rig.hub.set_hold_open(True)
-    rig.hub.transport.control_node02.assert_not_called()
+    rig.hub.transport.control_node.assert_not_called()
     assert not rig.manager.restore_safe
     assert "persistence failed" in caplog.text
     rig.store.fail = False
@@ -396,7 +396,7 @@ async def test_write_ahead_failure_rejects_control_and_post_ack_failure_is_not_r
         rig.store.fail = True
         return 4
 
-    rig.hub.transport.control_node02.side_effect = ack_then_disk_fails
+    rig.hub.transport.control_node.side_effect = ack_then_disk_fails
     await rig.hub.set_hold_open(True)
     assert rig.manager.status == "active" and not rig.manager.restore_safe
     assert rig.store.data["protection_state"] == "uncertain"
@@ -404,7 +404,7 @@ async def test_write_ahead_failure_rejects_control_and_post_ack_failure_is_not_r
     hub = await rig.create()
     assert hub.hold_open_timeout.status == "uncertain"
     hub.notify()
-    hub.transport.control_node02.assert_not_called()
+    hub.transport.control_node.assert_not_called()
 
 
 async def test_crash_during_command_and_cancel_before_send(rig):
@@ -416,7 +416,7 @@ async def test_crash_during_command_and_cancel_before_send(rig):
     rig.clock.advance(minutes=60)
     hub.notify()
     await settle(hub.hold_open_timeout)
-    hub.transport.control_node02.assert_not_called()
+    hub.transport.control_node.assert_not_called()
     await rig.manager.async_complete("not_sent", enabled=True)
 
 
@@ -458,7 +458,7 @@ async def test_corrupt_storage_does_not_create_confirmed_session(rig, bad):
     assert hub.hold_open_timeout.status == "uncertain"
     assert not hub.hold_open_timeout.restore_safe
     hub.notify()
-    hub.transport.control_node02.assert_not_called()
+    hub.transport.control_node.assert_not_called()
 
 
 @pytest.mark.usefixtures("enable_custom_integrations", "socket_enabled")
@@ -589,7 +589,7 @@ async def test_real_ha_timer_releases_once_with_simulated_time(hass, freezer):
     hub.transport = SimpleNamespace(
         connected=True,
         tainted=False,
-        control_node02=AsyncMock(return_value=4),
+        control_node=AsyncMock(return_value=4),
         close=AsyncMock(),
     )
     hub._validation_polls = 2
@@ -599,7 +599,7 @@ async def test_real_ha_timer_releases_once_with_simulated_time(hass, freezer):
     async_fire_time_changed(hass, dt_util.utcnow())
     await asyncio.sleep(0)
     await settle(hub.hold_open_timeout)
-    assert hub.transport.control_node02.call_count == 2
+    assert hub.transport.control_node.call_count == 2
     assert hub.hold_open_timeout.status == "idle"
     assert hub.hold_open_timeout._timer is None
     await hub.stop()
@@ -623,5 +623,5 @@ async def test_cancel_during_write_ahead_keeps_previous_confirmed_session(rig):
         await task
     assert not rig.hub.busy
     assert rig.manager.status == "active" and rig.manager.deadline == original
-    assert rig.hub.transport.control_node02.call_count == 1
+    assert rig.hub.transport.control_node.call_count == 1
     assert rig.store.data["protection_state"] == "active"

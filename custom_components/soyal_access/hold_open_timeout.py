@@ -12,7 +12,7 @@ from homeassistant.helpers.event import async_track_point_in_utc_time
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
-from .const import DOMAIN
+from .const import DEFAULT_NODE_ID, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 _STATES = {
@@ -67,9 +67,10 @@ class HoldOpenTimeout:
     def __init__(self, hass, hub):
         self._hass = hass
         self._hub = hub
-        self._store = ProtectionStore(
-            hass, 1, f"{DOMAIN}.{hub.entry_id}.hold_open_timeout", atomic_writes=True
-        )
+        key = f"{DOMAIN}.{hub.entry_id}.hold_open_timeout"
+        if hub.node_id != DEFAULT_NODE_ID:
+            key = f"{key}.{hub.node_id}"
+        self._store = ProtectionStore(hass, 1, key, atomic_writes=True)
         self.enabled = True
         self.minutes = 30
         self.started_at = None
@@ -84,6 +85,16 @@ class HoldOpenTimeout:
         self._closed = False
         self._prior = None
         self._recheck = False
+
+    @property
+    def can_change_node(self):
+        """Only leave a station with no outstanding or unconfirmed hold."""
+        return (
+            self.restore_safe
+            and self._phase == "idle"
+            and self.started_at is None
+            and self._task is None
+        )
 
     @property
     def status(self):
@@ -299,7 +310,7 @@ class HoldOpenTimeout:
                 self._reschedule()
                 self._notify()
                 raise HomeAssistantError(
-                    "Node 02 hold open was not sent: protection journal unavailable"
+                    f"{self._hub.node_label} hold open was not sent: protection journal unavailable"
                 )
             self._notify()
             return True

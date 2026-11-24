@@ -11,7 +11,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.util import dt as dt_util
 
-from .const import DEFAULT_TIMEOUT, DOMAIN
+from .const import DEFAULT_NODE_ID, DEFAULT_TIMEOUT, DOMAIN
 from .fifo import parse_event
 from .fifo_storage import FifoStorage
 from .hold_open_timeout import HoldOpenTimeout
@@ -30,14 +30,18 @@ class Hub:
         self.signal = f"{DOMAIN}_{entry.entry_id}"
         self.events_signal = f"{self.signal}_events_saved"
         self.entry_id = entry.entry_id
+        self._entry = entry
+        self.node_id = entry.data.get("node_id", DEFAULT_NODE_ID)
+        self.node_uid = f"{entry.entry_id}:{self.node_id}"
+        self.node_label = f"Node {self.node_id:02d}"
         endpoint = repr((entry.data["host"], entry.data["port"])).encode()
         key = sha256(endpoint).hexdigest()
         self._legacy_path = Path(hass.config.path(".storage", f"{DOMAIN}.{key}"))
         self._hass = hass
         self.node_device = DeviceInfo(
-            identifiers={(DOMAIN, f"{entry.entry_id}:2")},
+            identifiers={(DOMAIN, self.node_uid)},
             via_device_id=gateway_device_id,
-            name="SOYAL AR-725E — Node 02",
+            name=f"SOYAL AR-725E — {self.node_label}",
             manufacturer="SOYAL",
             model="AR-725E",
         )
@@ -65,6 +69,7 @@ class Hub:
             entry.data["port"],
             entry.data.get("timeout", DEFAULT_TIMEOUT),
             self.notify,
+            node_id=self.node_id,
         )
 
         self.hold_open_timeout = HoldOpenTimeout(hass, self)
@@ -154,7 +159,7 @@ class Hub:
                 ):
                     async with self._transaction:
                         try:
-                            frame = await self.transport.poll_node02()
+                            frame = await self.transport.poll_node()
                         except (OSError, ProtocolError):
                             frame = None
                         if self._record_poll(frame):
@@ -208,10 +213,10 @@ class Hub:
             if frame.code == 4:
                 return
             if frame.code == 5:
-                _LOGGER.warning("SOYAL Node 02 rejected FIFO read (NACK)")
+                _LOGGER.warning("SOYAL %s rejected FIFO read (NACK)", self.node_label)
                 return
 
-            event = parse_event(frame)
+            event = parse_event(frame, self.node_id)
             received_at = dt_util.utcnow().isoformat()
             await self._hass.async_add_executor_job(
                 self.fifo_storage.save_event, event, received_at
@@ -221,7 +226,7 @@ class Hub:
             self._fifo_delete_pending = True
             self._fifo_delete_waiting_for_poll = True
         except (OSError, ProtocolError, sqlite3.Error, TimeoutError) as err:
-            _LOGGER.warning("SOYAL Node 02 FIFO read/save failed: %s", err)
+            _LOGGER.warning("SOYAL %s FIFO read/save failed: %s", self.node_label, err)
 
     async def _delete_fifo_event(self):
         async with self._transaction:
@@ -236,12 +241,12 @@ class Hub:
             except (OSError, ProtocolError, TimeoutError) as err:
                 self._fifo_delete_pending = False
                 self._fifo_delete_waiting_for_poll = False
-                _LOGGER.warning("SOYAL Node 02 FIFO delete failed: %s", err)
+                _LOGGER.warning("SOYAL %s FIFO delete failed: %s", self.node_label, err)
                 return
         self._fifo_delete_pending = False
         self._fifo_delete_waiting_for_poll = False
         if code == 5:
-            _LOGGER.warning("SOYAL Node 02 rejected FIFO delete (NACK)")
+            _LOGGER.warning("SOYAL %s rejected FIFO delete (NACK)", self.node_label)
 
     def _record_poll(self, frame):
         valid = frame is not None
@@ -283,7 +288,11 @@ class Hub:
 
     @property
     def can_pulse(self):
-        return self.can_query
+        # Updating entry data schedules a reload; the old Hub must reject control
+        # immediately, including during the gap before platform unload.
+        return self.can_query and self.node_id == self._entry.data.get(
+            "node_id", DEFAULT_NODE_ID
+        )
 
     async def pulse(self, *, user_id=None):
         await self._control(0x84, "pulse", user_id=user_id)
@@ -298,7 +307,7 @@ class Hub:
     ):
         if not self.can_pulse or self.busy:
             raise HomeAssistantError(
-                f"Node 02 {label} was not sent: Gateway unavailable, validating, or busy"
+                f"{self.node_label} {label} was not sent: Gateway unavailable, validating, or busy"
             )
         self.busy = True
         sent = False
@@ -323,23 +332,25 @@ class Hub:
                     if not self.can_pulse or self._hass.is_stopping:
                         raise NotSentError
                 sent = True
-                code = await self.transport.control_node02(action)
+                code = await self.transport.control_node(action)
             if code == 5:
                 outcome = "nack"
-                raise HomeAssistantError(f"Node 02 rejected the {label} (NACK)")
+                raise HomeAssistantError(
+                    f"{self.node_label} rejected the {label} (NACK)"
+                )
             outcome = "success"
             succeeded_at = dt_util.utcnow()
             if hold_open is not None:
                 self.hold_open = hold_open
         except NotSentError as err:
             outcome = "not_sent"
-            raise HomeAssistantError(f"Node 02 {label} was not sent") from err
+            raise HomeAssistantError(f"{self.node_label} {label} was not sent") from err
         except (TimeoutError, OSError, ProtocolError) as err:
             outcome = "uncertain"
             if hold_open is not None:
                 self.hold_open = None
             raise HomeAssistantError(
-                f"Node 02 {label} outcome unconfirmed ({type(err).__name__})"
+                f"{self.node_label} {label} outcome unconfirmed ({type(err).__name__})"
             ) from err
         except asyncio.CancelledError:
             outcome = "uncertain" if sent else "not_sent"
@@ -383,6 +394,7 @@ class Hub:
         try:
             await self._hass.async_add_executor_job(
                 self.fifo_storage.save_ha_event,
+                self.node_id,
                 event_type,
                 succeeded_at.isoformat(),
                 dt_util.as_local(succeeded_at).isoformat(),

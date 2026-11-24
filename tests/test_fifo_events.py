@@ -19,8 +19,8 @@ STATUS_ACK_UNLOCKED = bytes.fromhex("7E 0A 00 04 02 34 50 00 18 73 F6 0B")
 STATUS_NACK = bytes.fromhex("7E 0A 00 05 02 34 10 00 18 73 B7 8D")
 
 
-def event_frame():
-    payload = bytes([2, 7, 6, 5, 4, 19, 11, 26, 2, 0x12, 0x34]) + bytes(14)
+def event_frame(node_id=2):
+    payload = bytes([node_id, 7, 6, 5, 4, 19, 11, 26, 2, 0x12, 0x34]) + bytes(14)
     return encode(Frame(0, 0x0B, payload))
 
 
@@ -328,7 +328,7 @@ def test_status_payload_mask_ignores_only_the_io_byte(payload, accepted):
     assert (
         transport.Transport._matches_payload_mask(
             bytes.fromhex(payload),
-            transport._FIFO_STATUS,
+            transport.Transport("", 0, 1, lambda: None, node_id=2)._fifo_status,
             transport._FIFO_STATUS_MASK,
         )
         is accepted
@@ -361,4 +361,72 @@ async def test_storage_init_failure_disables_fifo_but_keeps_polling(hass, monkey
         except TimeoutError:
             pass
         assert hub.can_query
+        assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_node05_poll_fifo_control_history_and_wrong_source(hass, monkeypatch):
+    from homeassistant.exceptions import HomeAssistantError
+    from homeassistant.helpers import entity_registry as er
+
+    from custom_components.soyal_access.const import DOMAIN
+
+    monkeypatch.setattr("custom_components.soyal_access.hub.FIFO_INTERVAL", 0.9)
+    poll, read, delete, pulse = (
+        encode(Frame(5, code, payload))
+        for code, payload in (
+            (0x21, b"\x00\x00"),
+            (0x25, b""),
+            (0x37, b""),
+            (0x21, b"\x84"),
+        )
+    )
+    io = encode(Frame(0, 3, bytes.fromhex("05 73 10 00 18")))
+    ack = encode(Frame(0, 4, b"\x05"))
+    status_ack = encode(Frame(0, 4, bytes.fromhex("05 34 50 00 18 73")))
+    async with gateway(allow_fifo=True, allow_pop=True, node_id=5) as (
+        port,
+        connections,
+    ):
+        entry = await setup_entry(hass, port, timeout=0.5, node_id=5)
+        hub = entry.runtime_data
+        writer, requests, _ = await next_item(connections)
+        for _ in range(2):
+            assert (await next_item(requests))[1] == poll
+            await send(writer, io)
+        await eventually(lambda: hub.can_pulse)
+
+        async def await_request(expected):
+            async with asyncio.timeout(4):
+                while (packet := (await requests.get())[1]) != expected:
+                    assert packet == poll
+                    await send(writer, io)
+
+        await await_request(read)
+        await send(writer, event_frame(5))
+        await eventually(lambda: hub._fifo_delete_waiting_for_poll)
+        assert (await next_item(requests))[1] == poll
+        await send(writer, io)
+        await await_request(delete)
+        await send(writer, status_ack)
+        control = asyncio.create_task(hub.pulse())
+        await await_request(pulse)
+        await send(writer, ack)
+        await control
+        sensor = er.async_get(hass).async_get_entity_id(
+            "sensor", DOMAIN, f"{entry.entry_id}:5:access_event_history"
+        )
+        await eventually(lambda: hass.states.get(sensor).state == "2")
+        rows = hass.states.get(sensor).attributes["events"]
+        assert [(row["node_id"], row["source"]) for row in rows] == [
+            (5, "ha"),
+            (5, "soyal"),
+        ]
+
+        control = asyncio.create_task(hub.pulse())
+        await await_request(pulse)
+        await send(writer, EMPTY)  # Valid ACK framing, but the source is Node 02.
+        with pytest.raises(HomeAssistantError, match="outcome unconfirmed"):
+            await control
+        assert hub.transport.tainted
+        assert event_count(hub) == 2
         assert await hass.config_entries.async_unload(entry.entry_id)

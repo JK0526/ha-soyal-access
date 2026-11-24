@@ -80,7 +80,11 @@ async def test_config_flow_and_duplicate(hass):
 
         result = await form()
         assert result["type"] == FlowResultType.FORM
-        assert {key.schema for key in result["data_schema"].schema} == {"host", "port"}
+        assert {key.schema for key in result["data_schema"].schema} == {
+            "host",
+            "port",
+            "node_id",
+        }
         assert connections.empty()
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"], {"host": "invalid host", "port": port}
@@ -95,7 +99,7 @@ async def test_config_flow_and_duplicate(hass):
         assert hass.states.get(tcp_id(hass, entry)).state == STATE_ON
         duplicate = await form()
         duplicate = await hass.config_entries.flow.async_configure(
-            duplicate["flow_id"], data
+            duplicate["flow_id"], {**data, "node_id": 5}
         )
         assert duplicate["reason"] == "already_configured"
         assert connections.empty()
@@ -259,7 +263,7 @@ async def test_legacy_entry_registry_and_disk_are_preserved(hass, tmp_path):
         )
         assert flow["reason"] == "reconfigure_successful"
         await hass.async_block_till_done()
-        assert dict(entry.data) == data
+        assert dict(entry.data) == {**data, "node_id": 2}
         assert await next_item(received) == b""
         await next_item(connections)
         assert tcp_id(hass, entry) == old_tcp.entity_id
@@ -431,3 +435,86 @@ async def test_node02_operations(hass, response, expected, domain, key, action, 
 
         assert requests.empty()
         assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_node_change_requires_safe_release_and_keeps_station_store(hass):
+    from unittest.mock import patch
+
+    async with gateway() as (port, connections, received):
+        entry = await setup_entry(hass, port)
+        await next_item(connections)
+        old = entry.runtime_data
+        assert old.node_id == 2
+        manager = old.hold_open_timeout
+        await manager.async_configure(enabled=False, minutes=17)
+        with patch.object(old.transport, "control_node", return_value=4):
+            await old.set_hold_open(True)
+        assert await hass.config_entries.async_reload(entry.entry_id)
+        await hass.async_block_till_done()
+        assert await next_item(received) == b""
+        await next_item(connections)
+        old = entry.runtime_data
+        manager = old.hold_open_timeout
+        assert manager._store.key == f"soyal_access.{entry.entry_id}.hold_open_timeout"
+        assert not manager.enabled and manager.minutes == 17
+        assert manager.started_at is not None and old.hold_open is None
+
+        async def reconfigure():
+            flow = await hass.config_entries.flow.async_init(
+                DOMAIN,
+                context={"source": SOURCE_RECONFIGURE, "entry_id": entry.entry_id},
+            )
+            return await hass.config_entries.flow.async_configure(
+                flow["flow_id"], {"host": "127.0.0.1", "port": port, "node_id": 5}
+            )
+
+        assert (await reconfigure())["reason"] == "node_change_hold_open"
+        assert entry.runtime_data is old and entry.data.get("node_id", 2) == 2
+        registry = er.async_get(hass)
+        old_entity_ids = {
+            item.entity_id
+            for item in er.async_entries_for_config_entry(registry, entry.entry_id)
+            if item.unique_id.startswith(f"{entry.entry_id}:2:")
+        }
+        devices = dr.async_get(hass)
+        old_device = devices.async_get_device_by_identifier(
+            (DOMAIN, old.node_uid), entry.entry_id
+        )
+        with patch.object(old.transport, "control_node", return_value=4) as control:
+            await old.set_hold_open(False)
+            assert (await reconfigure())["reason"] == "reconfigure_successful"
+            await hass.async_block_till_done()
+            control.assert_awaited_once_with(0x83)
+        assert await next_item(received) == b""
+        await next_item(connections)
+        new = entry.runtime_data
+        assert new.node_id == 5 and new.hold_open is None
+        assert manager._closed and manager._timer is None and manager._task is None
+        assert new.hold_open_timeout.status == "idle"
+        assert new.hold_open_timeout.enabled and new.hold_open_timeout.minutes == 30
+        assert new.hold_open_timeout._store.key != manager._store.key
+        assert all(
+            registry.async_get(entity_id) is None for entity_id in old_entity_ids
+        )
+        assert devices.async_get(old_device.id) is None
+        assert (
+            len(
+                [
+                    item
+                    for item in er.async_entries_for_config_entry(
+                        registry, entry.entry_id
+                    )
+                    if item.unique_id.startswith(f"{entry.entry_id}:5:")
+                ]
+            )
+            == 7
+        )
+        history = registry.async_get_entity_id(
+            "sensor", DOMAIN, f"{entry.entry_id}:5:access_event_history"
+        )
+        assert hass.states.get(history).state == "0"
+        assert (await hass.async_add_executor_job(new.fifo_storage.read_history, 2))[
+            0
+        ] == 2
+        assert await hass.config_entries.async_unload(entry.entry_id)
+        assert await next_item(received) == b""

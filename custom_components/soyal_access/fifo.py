@@ -1,4 +1,4 @@
-"""Parsing helpers for the observed SOYAL Node 02 FIFO event format."""
+"""Parsing helpers for the observed SOYAL FIFO event format."""
 
 from datetime import datetime
 
@@ -12,11 +12,11 @@ EVENT_TYPES = {
 }
 
 
-def parse_event(frame: Frame) -> dict:
-    """Return the confirmed fields from a 31-byte Node 02 FIFO event."""
+def parse_event(frame: Frame, node_id: int) -> dict:
+    """Return the confirmed fields from a 31-byte FIFO event."""
     data = frame.payload
-    if frame.node != 0 or len(data) != 25 or data[0] != 2 or frame.code in (4, 5):
-        raise ProtocolError("Unexpected Node 02 FIFO event format")
+    if frame.node != 0 or len(data) != 25 or data[0] != node_id or frame.code in (4, 5):
+        raise ProtocolError("Unexpected FIFO event format")
 
     second, minute, hour, _, day, month, year = data[1:8]
     try:

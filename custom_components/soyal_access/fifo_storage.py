@@ -65,7 +65,13 @@ class FifoStorage:
             )
 
     def save_ha_event(
-        self, event_type, received_at, event_time_local, ha_user_id, ha_user_name
+        self,
+        node_id,
+        event_type,
+        received_at,
+        event_time_local,
+        ha_user_id,
+        ha_user_name,
     ):
         """Append one accepted HA command; -1/empty packet are non-SOYAL sentinels."""
         with closing(self._connect()) as db, db:
@@ -74,11 +80,18 @@ class FifoStorage:
                     received_at, node_id, event_code, event_type,
                     event_time_local, port, user_address, raw_frame_hex,
                     source, ha_user_id, ha_user_name
-                ) VALUES (?, 2, -1, ?, ?, -1, -1, '', 'ha', ?, ?)""",
-                (received_at, event_type, event_time_local, ha_user_id, ha_user_name),
+                ) VALUES (?, ?, -1, ?, ?, -1, -1, '', 'ha', ?, ?)""",
+                (
+                    received_at,
+                    node_id,
+                    event_type,
+                    event_time_local,
+                    ha_user_id,
+                    ha_user_name,
+                ),
             )
 
-    def read_history(self):
+    def read_history(self, node_id):
         """Read a consistent count and latest rows without creating a database."""
         if not self.path.exists():
             return 0, []
@@ -87,11 +100,14 @@ class FifoStorage:
         ) as db:
             db.row_factory = sqlite3.Row
             db.execute("BEGIN")
-            count = db.execute("SELECT COUNT(*) FROM access_events").fetchone()[0]
+            count = db.execute(
+                "SELECT COUNT(*) FROM access_events WHERE node_id = ?", (node_id,)
+            ).fetchone()[0]
             rows = db.execute(
-                """SELECT id, received_at, event_code, event_time_local, event_type,
+                """SELECT id, node_id, received_at, event_code, event_time_local, event_type,
                           port, user_address, source, ha_user_id, ha_user_name
-                   FROM access_events ORDER BY id DESC LIMIT 100"""
+                   FROM access_events WHERE node_id = ? ORDER BY id DESC LIMIT 100""",
+                (node_id,),
             ).fetchall()
             events = [dict(row) for row in rows]
             for event in events:

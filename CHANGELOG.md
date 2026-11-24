@@ -2,6 +2,13 @@
 
 版本來源為 [manifest.json](custom_components/soyal_access/manifest.json)。Git Tag 使用 `v` 前綴。預發佈使用 Semantic Versioning 的 `-beta.N` 或 `-rc.N`，正式版使用不帶預發佈後綴的版本。
 
+## v0.8.0-beta.8
+
+- 首次安裝與重新設定可指定 Node ID 1–254，預設 2。每個 Host＋Port 維持一條 TCP Session 與單站輪詢。
+- 指定站號用於封包、嚴格回覆驗證、FIFO、裝置與實體識別。Node 02 保留原有識別與超時 Store。
+- 站號切換需先安全結束原站號的常開工作階段。重載後清理舊實體與裝置，其他站號使用獨立的超時設定與工作階段。
+- 歷史 Sensor 按站號篩選並輸出 `node_id`，既有 SQLite schema 及資料完整保留。非 Node 02 的硬體與 FIFO 相容性待實機驗收。
+
 ## v0.8.0-beta.7
 
 - 成功 HA 單次開門、常開、解除常開與超時解除統一寫入既有 `access_events`；NACK、未送出、結果不明、取消與設定變更不記錄。

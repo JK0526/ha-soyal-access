@@ -23,7 +23,7 @@ class AccessEventHistory(SensorEntity):
 
     def __init__(self, hub):
         self._hub = hub
-        self._attr_unique_id = f"{hub.entry_id}:2:access_event_history"
+        self._attr_unique_id = f"{hub.node_uid}:access_event_history"
         self._attr_device_info = hub.node_device
         self._attr_extra_state_attributes = {"events": []}
         self._history_lock = asyncio.Lock()
@@ -46,7 +46,7 @@ class AccessEventHistory(SensorEntity):
         async with self._history_lock:
             try:
                 count, events = await self.hass.async_add_executor_job(
-                    self._hub.fifo_storage.read_history
+                    self._hub.fifo_storage.read_history, self._hub.node_id
                 )
             except (OSError, sqlite3.Error) as err:
                 self._attr_available = False

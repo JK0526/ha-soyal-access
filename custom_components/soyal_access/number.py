@@ -1,4 +1,4 @@
-"""Native hold-open timeout configuration for Node 02."""
+"""Native hold-open timeout configuration for the configured node."""
 
 from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.const import UnitOfTime
@@ -25,7 +25,7 @@ class HoldOpenTimeoutNumber(NumberEntity):
     def __init__(self, hub):
         self._manager = hub.hold_open_timeout
         self._attr_device_info = hub.node_device
-        self._attr_unique_id = f"{hub.entry_id}:2:hold_open_timeout"
+        self._attr_unique_id = f"{hub.node_uid}:hold_open_timeout"
 
     @property
     def native_value(self):

@@ -6,7 +6,7 @@ import re
 import voluptuous as vol
 from homeassistant import config_entries
 
-from .const import DEFAULT_PORT, DOMAIN
+from .const import DEFAULT_NODE_ID, DEFAULT_PORT, DOMAIN, MAX_NODE_ID, MIN_NODE_ID
 
 
 def normalized_host(value: str) -> str:
@@ -29,6 +29,9 @@ def schema(defaults):
             vol.Required("port", default=defaults.get("port", DEFAULT_PORT)): vol.All(
                 int, vol.Range(min=1, max=65535)
             ),
+            vol.Required(
+                "node_id", default=defaults.get("node_id", DEFAULT_NODE_ID)
+            ): vol.All(int, vol.Range(min=MIN_NODE_ID, max=MAX_NODE_ID)),
         }
     )
 
@@ -46,11 +49,13 @@ class SoyalConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def _configure(self, step, defaults, user_input):
         errors = {}
         if user_input is not None:
-            data = dict(user_input)
+            data = {"node_id": defaults.get("node_id", DEFAULT_NODE_ID), **user_input}
             try:
                 data["host"] = normalized_host(data["host"])
             except vol.Invalid:
                 errors["host"] = "invalid_host"
+            if type(data["node_id"]) is not int:
+                errors["node_id"] = "invalid_node_id"
             if not errors:
                 key = f"[{data['host']}]:{data['port']}"
                 await self.async_set_unique_id(key)
@@ -63,6 +68,21 @@ class SoyalConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     for other in self._async_current_entries()
                 ):
                     return self.async_abort(reason="already_configured")
+                if data["node_id"] != entry.data.get("node_id", DEFAULT_NODE_ID):
+                    hub = getattr(entry, "runtime_data", None)
+                    if (
+                        entry.state is not config_entries.ConfigEntryState.LOADED
+                        or hub is None
+                        or hub.stopping
+                        or hub.node_id != entry.data.get("node_id", DEFAULT_NODE_ID)
+                    ):
+                        return self.async_abort(reason="node_change_unavailable")
+                    if (
+                        hub.busy
+                        or hub.hold_open is True
+                        or not hub.hold_open_timeout.can_change_node
+                    ):
+                        return self.async_abort(reason="node_change_hold_open")
                 updated = dict(entry.data) | data
                 return self.async_update_reload_and_abort(
                     entry, unique_id=key, title=key, data=updated

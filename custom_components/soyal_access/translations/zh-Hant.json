@@ -6,7 +6,8 @@
         "description": "載入整合時建立 TCP 連線。",
         "data": {
           "host": "Gateway 主機",
-          "port": "TCP 埠"
+          "port": "TCP 埠",
+          "node_id": "門禁控制器站號"
         }
       },
       "reconfigure": {
@@ -14,16 +15,20 @@
         "description": "載入整合時建立 TCP 連線。",
         "data": {
           "host": "Gateway 主機",
-          "port": "TCP 埠"
+          "port": "TCP 埠",
+          "node_id": "門禁控制器站號"
         }
       }
     },
     "error": {
-      "invalid_host": "請輸入有效的 IP 或主機名稱。"
+      "invalid_host": "請輸入有效的 IP 或主機名稱。",
+      "invalid_node_id": "請輸入 1–254 的整數站號。"
     },
     "abort": {
       "already_configured": "此 Gateway 已設定。",
-      "reconfigure_successful": "已更新 Gateway 設定。"
+      "reconfigure_successful": "已更新 Gateway 設定。",
+      "node_change_unavailable": "請先載入整合並確認原站號的常開狀態，再變更站號。",
+      "node_change_hold_open": "目前有控制交易或尚未安全結束的常開工作階段。請先確認現場並成功解除常開，再變更站號。"
     }
   },
   "entity": {

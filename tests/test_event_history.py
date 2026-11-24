@@ -47,7 +47,7 @@ def test_history_normalizes_only_legacy_invalid_user_pin(tmp_path):
     storage.save_event({**event, "event_code": 2}, "legacy-2")
     storage.save_event({**event, "event_type": "pin_access"}, "classified")
 
-    count, events = storage.read_history()
+    count, events = storage.read_history(2)
 
     assert count == 3
     assert [row["event_type"] for row in events] == [
@@ -93,7 +93,7 @@ async def test_history_refresh_reload_and_recorder(hass):
         assert sensor_entity.device_id == sensor_device.id
         assert hass.states.get(entity_id).state == "0"
         assert hass.states.get(entity_id).attributes["events"] == []
-        event = parse_event(decode(event_frame()))
+        event = parse_event(decode(event_frame()), 2)
 
         def populate():
             for i in range(105):
@@ -111,6 +111,7 @@ async def test_history_refresh_reload_and_recorder(hass):
         assert [row["id"] for row in rows] == list(range(105, 5, -1))
         assert set(rows[0]) == {
             "id",
+            "node_id",
             "received_at",
             "event_time_local",
             "event_type",
@@ -200,9 +201,9 @@ def test_schema_upgrade_preserves_rows_ids_and_legacy_queries(tmp_path):
         assert db.execute(
             "SELECT source, ha_user_id, ha_user_name FROM access_events"
         ).fetchone() == ("soyal", None, None)
-    storage.save_ha_event("ha_pulse_open", "utc", "local", "user-1", "測試者")
-    storage.save_event(parse_event(decode(event_frame())), "fifo")
-    count, rows = storage.read_history()
+    storage.save_ha_event(2, "ha_pulse_open", "utc", "local", "user-1", "測試者")
+    storage.save_event(parse_event(decode(event_frame()), 2), "fifo")
+    count, rows = storage.read_history(2)
     assert count == 3
     assert [row["id"] for row in rows] == [44, 43, 42]
     assert [row["source"] for row in rows] == ["soyal", "ha", "soyal"]
@@ -221,7 +222,7 @@ async def control_hub(hass):
     hub.transport = SimpleNamespace(
         connected=True,
         tainted=False,
-        control_node02=AsyncMock(return_value=4),
+        control_node=AsyncMock(return_value=4),
         close=AsyncMock(),
     )
     hub._validation_polls = 2
@@ -264,7 +265,9 @@ async def test_success_history_context_and_timeout_classification(hass, control_
         await manager._task
         assert auth.call_count == 3
     actor.name = "已變更姓名"
-    count, rows = await hass.async_add_executor_job(hub.fifo_storage.read_history)
+    count, rows = await hass.async_add_executor_job(
+        hub.fifo_storage.read_history, hub.node_id
+    )
     assert count == 5
     assert [row["event_type"] for row in reversed(rows)] == [
         "ha_pulse_open",
@@ -290,12 +293,14 @@ async def test_success_history_context_and_timeout_classification(hass, control_
 async def test_failed_controls_do_not_write_history(control_hub, failure):
     hub = control_hub
     if failure == 5:
-        hub.transport.control_node02.return_value = 5
+        hub.transport.control_node.return_value = 5
     else:
-        hub.transport.control_node02.side_effect = failure
+        hub.transport.control_node.side_effect = failure
     with pytest.raises((HomeAssistantError, asyncio.CancelledError)):
         await hub.pulse(user_id="not-looked-up")
-    assert await hub._hass.async_add_executor_job(hub.fifo_storage.read_history) == (
+    assert await hub._hass.async_add_executor_job(
+        hub.fifo_storage.read_history, hub.node_id
+    ) == (
         0,
         [],
     )
@@ -318,7 +323,9 @@ async def test_history_failure_and_user_lookup_do_not_block_next_control(
         await hub.pulse()
         finish_lookup.set()
         await first
-    _, rows = await hass.async_add_executor_job(hub.fifo_storage.read_history)
+    _, rows = await hass.async_add_executor_job(
+        hub.fifo_storage.read_history, hub.node_id
+    )
     assert len(rows) == 2
     assert all(
         row["ha_user_id"] is None and row["ha_user_name"] is None for row in rows
@@ -332,7 +339,7 @@ async def test_history_failure_and_user_lookup_do_not_block_next_control(
         await hub.set_hold_open(True)
     assert hub.hold_open is True
     assert hub.hold_open_timeout.status == "active"
-    assert hub.transport.control_node02.call_count == 3
+    assert hub.transport.control_node.call_count == 3
     assert "history save failed (control succeeded)" in caplog.text
 
 
@@ -344,7 +351,7 @@ async def test_ha_save_notifies_existing_sensor(hass):
             "sensor", DOMAIN, f"{entry.entry_id}:2:access_event_history"
         )
         hub._validation_polls = 2
-        with patch.object(hub.transport, "control_node02", return_value=4):
+        with patch.object(hub.transport, "control_node", return_value=4):
             await hub.pulse()
         await eventually(lambda: hass.states.get(entity_id).state == "1")
         row = hass.states.get(entity_id).attributes["events"][0]

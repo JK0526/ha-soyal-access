@@ -1,4 +1,4 @@
-"""Manual Node 02 pulse control."""
+"""Manual the configured node pulse control."""
 
 from homeassistant.components.button import ButtonEntity
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
@@ -15,7 +15,7 @@ class PulseButton(ButtonEntity):
     def __init__(self, hub):
         self._hub = hub
         self._attr_device_info = hub.node_device
-        self._attr_unique_id = f"{hub.entry_id}:2:{self._attr_translation_key}"
+        self._attr_unique_id = f"{hub.node_uid}:{self._attr_translation_key}"
 
     @property
     def available(self):

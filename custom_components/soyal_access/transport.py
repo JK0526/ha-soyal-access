@@ -6,14 +6,9 @@ from time import monotonic
 
 from .protocol import HEADER, Frame, ProtocolError, decode, encode
 
-_QUERY = encode(Frame(2, 0x21, b"\x00\x00"))
-_FIFO = encode(Frame(2, 0x25))
-_FIFO_DELETE = encode(Frame(2, 0x37))
-_FIFO_STATUS = bytes.fromhex("02 34 10 00 18 73")
 # Payload byte 2 mirrors the live I/O byte (unlock output, inputs, ...), so it
 # changes with the door state. Compare every other byte exactly.
 _FIFO_STATUS_MASK = bytes.fromhex("FF FF 00 FF FF FF")
-_CONTROLS = {code: encode(Frame(2, 0x21, bytes([code]))) for code in (0x82, 0x83, 0x84)}
 
 
 class NotSentError(ConnectionError):
@@ -24,7 +19,16 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class Transport:
-    def __init__(self, host, port, timeout, link_changed):
+    def __init__(self, host, port, timeout, link_changed, *, node_id):
+        self._node_id = node_id
+        self._query = encode(Frame(node_id, 0x21, b"\x00\x00"))
+        self._fifo = encode(Frame(node_id, 0x25))
+        self._fifo_delete = encode(Frame(node_id, 0x37))
+        self._fifo_status = bytes([node_id]) + bytes.fromhex("34 10 00 18 73")
+        self._controls = {
+            code: encode(Frame(node_id, 0x21, bytes([code])))
+            for code in (0x82, 0x83, 0x84)
+        }
         self._host = host
         self._port = port
         self._timeout = timeout
@@ -86,7 +90,7 @@ class Transport:
                     frame.node != 0
                     or not valid_code
                     or not frame.payload
-                    or frame.payload[0] != 2
+                    or frame.payload[0] != self._node_id
                     or (
                         buffer[1] in self._payload_masks
                         and not self._matches_payload_mask(
@@ -115,31 +119,31 @@ class Transport:
             writer.close()
             self._set_disconnected()
 
-    async def poll_node02(self):
-        _, frame = await self._exchange(_QUERY, expected={9: (3,), 5: (5,)})
+    async def poll_node(self):
+        _, frame = await self._exchange(self._query, expected={9: (3,), 5: (5,)})
         return frame if frame.code == 3 else None
 
-    async def control_node02(self, action):
+    async def control_node(self, action):
         _, frame = await self._exchange(
-            _CONTROLS[action], expected={9: (3,), 5: (4, 5)}
+            self._controls[action], expected={9: (3,), 5: (4, 5)}
         )
         return frame.code
 
     async def read_fifo_event(self):
         """Read the oldest FIFO event or a recognized empty/NACK response."""
         _, frame = await self._exchange(
-            _FIFO,
+            self._fifo,
             expected={5: (4, 5), 10: (4, 5), 29: None},
-            payload_masks={10: (_FIFO_STATUS, _FIFO_STATUS_MASK)},
+            payload_masks={10: (self._fifo_status, _FIFO_STATUS_MASK)},
         )
         return frame
 
     async def delete_fifo_event(self):
         """Delete the FIFO head after its event has been committed locally."""
         _, frame = await self._exchange(
-            _FIFO_DELETE,
+            self._fifo_delete,
             expected={10: (4, 5)},
-            payload_masks={10: (_FIFO_STATUS, _FIFO_STATUS_MASK)},
+            payload_masks={10: (self._fifo_status, _FIFO_STATUS_MASK)},
         )
         return frame.code
 

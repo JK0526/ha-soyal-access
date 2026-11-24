@@ -1,4 +1,4 @@
-"""Hold-open command state for Node 02."""
+"""Hold-open command state for the configured node."""
 
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
@@ -23,7 +23,7 @@ class HoldOpenSwitch(SwitchEntity):
     def __init__(self, hub):
         self._hub = hub
         self._attr_device_info = hub.node_device
-        self._attr_unique_id = f"{hub.entry_id}:2:hold_open"
+        self._attr_unique_id = f"{hub.node_uid}:hold_open"
 
     @property
     def extra_state_attributes(self):
@@ -70,7 +70,7 @@ class HoldOpenProtectionSwitch(SwitchEntity):
     def __init__(self, hub):
         self._manager = hub.hold_open_timeout
         self._attr_device_info = hub.node_device
-        self._attr_unique_id = f"{hub.entry_id}:2:hold_open_timeout_protection"
+        self._attr_unique_id = f"{hub.node_uid}:hold_open_timeout_protection"
 
     @property
     def is_on(self):

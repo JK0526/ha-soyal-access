@@ -2,6 +2,16 @@
 
 版本來源為 [manifest.json](custom_components/soyal_access/manifest.json)。Git Tag 使用 `v` 前綴。預發佈使用 Semantic Versioning 的 `-beta.N` 或 `-rc.N`，正式版使用不帶預發佈後綴的版本。
 
+## v0.8.0
+
+整合 v0.8.0 beta.1 至 beta.9 的功能與修正。Node 01、Node 02 已由使用者完成實機驗收。
+
+- 以 200 ms 目標週期輪詢門禁狀態，維持單一 TCP Session 與安全重連。連線重新驗證後恢復操作。
+- 自動同步 FIFO 至 SQLite，保存刷卡、密碼、無效使用者密碼及出門事件。事件先保存、再驗證輪詢、最後刪除。
+- 支援單次開門、常開與解除常開。可設定常開超時自動解除，成功的 HA 操作也納入歷史。
+- 每個 Gateway 可設定一個站號，範圍 1–254、預設 2。新增與重新設定均使用原生數字輸入框。歷史與常開超時設定依站號區分。
+- 相容 Node 01 與 Node 02 的 FIFO 狀態回覆。升級沿用既有整合設定、Node 02 實體識別及歷史資料。
+
 ## v0.8.0-beta.9
 
 - 修正 FIFO 延伸 ACK／NACK 相容性，接受最後一個 payload byte 的實機差異（Node 01 為 `0x74`，Node 02 為 `0x73`）。保留其他封包驗證及先保存再刪除流程。

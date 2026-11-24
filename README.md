@@ -1,26 +1,26 @@
 # SOYAL Access Control
 
-`v0.8.0-beta.9` 修正 FIFO 狀態 ACK 在不同控制器上的相容性。整合 domain 為 `soyal_access`。
+`v0.8.0` 正式版整合 200 ms 門禁狀態輪詢、安全 TCP 重連、FIFO 自動同步，以及保存刷卡、密碼、出門與 HA 操作的 SQLite 歷史。支援單次開門、常開、超時自動解除及自訂站號 1–254。Node 01、Node 02 已由使用者完成實機驗收。整合 domain 為 `soyal_access`。
 
 ## HACS 安裝或更新
 
 1. 若 HACS 尚未有此套件，在自訂儲存庫新增 `https://github.com/JK0526/ha-soyal-access`，類型選 Integration。
-2. 開啟 SOYAL Access Control 的下載或重新下載選單，指定 `v0.8.0-beta.9`，完成後重新啟動 Home Assistant。
+2. 開啟 SOYAL Access Control 的下載或重新下載選單，指定 `v0.8.0`，完成後重新啟動 Home Assistant。
 3. 已有 SOYAL Config Entry 會沿用原設定。首次安裝從「設定 → 裝置與服務 → 新增整合」選 SOYAL Access Control，輸入 Host、TCP Port 與門禁控制器站號。
 
 升級會保留同一 Config Entry、Gateway 設定及現有門禁與狀態實體 ID。FIFO 在背景自動執行，不新增 Home Assistant 實體。新的事件資料寫入 `<HA_CONFIG>/soyal_access_fifo/<entry_id>.sqlite3`；舊版 `<HA_CONFIG>/soyal_access/<entry_id>.sqlite3` 與歷史安全紀錄保持原狀，不會被開啟、覆寫或刪除。版本來源見 [manifest.json](custom_components/soyal_access/manifest.json)，歷史版本見 [CHANGELOG](CHANGELOG.md)。
 
 ## 設定門禁控制器站號
 
-首次安裝或在整合選單選擇「重新設定」，輸入控制器已設定的整數站號（預設 2）。依 [SOYAL E 系列設定說明](https://www.soyal.com/faq.php?act=view&id=885)，直接連線的單站控制器範圍為 1–254。[SOYAL 協定說明](https://www.soyal.com/faq.php?act=view&id=859) 將 0 保留給匯流排主站，255 用於廣播。每筆 Config Entry 以 Host＋Port 識別，維持一條 TCP Session、一個指定站號、200 ms 狀態輪詢及 2 秒 FIFO 檢查週期。不同端點可各自建立整合。
+首次安裝或在整合選單選擇「重新設定」，在數字輸入框輸入控制器已設定的整數站號（預設 2、步進 1）。依 [SOYAL E 系列設定說明](https://www.soyal.com/faq.php?act=view&id=885)，直接連線的單站控制器範圍為 1–254。[SOYAL 協定說明](https://www.soyal.com/faq.php?act=view&id=859) 將 0 保留給匯流排主站，255 用於廣播。每筆 Config Entry 以 Host＋Port 識別，維持一條 TCP Session、一個指定站號、200 ms 狀態輪詢及 2 秒 FIFO 檢查週期。不同端點可各自建立整合。
 
 既有未設定站號的整合仍使用 Node 02，保留 Config Entry、Device、Entity 識別及原有超時 Store。其他站號各自保存常開超時設定與工作階段。站號變更會重載整合、回收舊連線與計時工作、清除舊站號的有效 Entity／Device 登錄，建立新站號自己的實體。若有在途控制、未結束或未確認的常開工作階段（包含保護關閉時仍在常開），先確認現場並成功解除常開，再切換站號。切換本身不會發送門禁控制。
 
 FIFO 狀態回覆依目前設定驗證來源站號。Node 01 與 Node 02 的實測 ACK 差異見下方 FIFO 同步驗收說明。
 
-### beta.8 實機驗收
+### 站號驗收步驟
 
-1. 由 HACS 更新 beta.8 後重啟，確認現有 Node 02 的 Entity ID、超時設定與歷史保留。
+1. 由 HACS 更新 v0.8.0 後重啟，確認現有 Node 02 的 Entity ID、超時設定與歷史保留。
 2. 在可監看門鎖的環境確認舊站號已解除常開，再設定目標站號。確認舊控制實體移除、新裝置名稱正確，且只有配置的 Gateway 連線。
 3. 等待有效輪詢後驗證在線、解鎖輸出、單次開門、常開與解除。確認 FIFO 事件與 HA 操作都只出現在目前站號的歷史。
 4. 在常開中嘗試切換，確認遭阻擋。手動解除後再切換，確認新站號使用自己的超時設定且不承接舊計時。
@@ -64,7 +64,7 @@ SOYAL 回應沒有交易識別碼。新版會拒絕閒置時收到的非預期�
 
 「常開」開關採用 assumed state，啟動或 Reload 後從 Unknown 開始。即使顯示 Unknown，仍可明確執行開啟或關閉，或透過 HA 的 `switch.turn_on`／`switch.turn_off` 操作該實體。收到合法的 I/O 或 ACK 回應後，開關才會顯示最後成功下達的命令。NACK 保留上一個成功命令。交易結果不明時，清除命令狀態並關閉 Session，開關因此暫時顯示不可用。這個開關沒有實體鎖舌、門磁或 Relay 回授，請在現場確認電鎖動作。
 
-## v0.8.0-beta.6 常開超時保護
+## 常開超時保護
 
 Node 02 裝置新增兩個 HA 原生設定實體，不需 Helper、Automation 或自訂前端。Gateway 離線時仍可調整設定，調整本身不會送出開門或解除常開指令；重新啟用已到期的已確認工作階段則會進入解除流程。
 
@@ -137,7 +137,7 @@ cards:
 
 ### 現場實機驗收（beta.6 已由使用者通過）
 
-1. HACS 選取 `v0.8.0-beta.6` Pre-release 並重啟；確認版本、既有 Entity ID、FIFO 歷史與 Node 02 兩個新設定，預設 ON / 30 min，時間輸入為 BOX。
+1. HACS 選取 `v0.8.0` 並重啟；確認版本、既有 Entity ID、FIFO 歷史與 Node 02 兩個新設定，預設 ON / 30 min，時間輸入為 BOX。
 2. 於可監看電鎖的受控時段，設為 1 分鐘後常開。記錄 started_at / deadline，確認成功後才開始計時；脈衝開門與再次常開不延長期限。到期只解除一次，現場確認電鎖恢復。
 3. 手動解除成功後確認計時取消。先設 2 分鐘、常開後等待一段時間，改為 1 分鐘，確認截止仍以原始開始時間計算；若已過期應進入解除。
 4. 常開期間停用保護，確認不立即改變電鎖；超過原期限後重新啟用，確認等待連線驗證後解除。無已確認工作階段時啟用，確認不送控制指令。
@@ -168,7 +168,7 @@ cards:
 
 繁體中文介面中的「主門解鎖輸出」以「解鎖中」與「未解鎖」顯示卡機輸出。這項翻譯保留原有 `on`／`off`、Entity ID 與自動化語意。離線時顯示 HA 原生不可用狀態。升級會移除舊手動查詢按鈕與最近查詢結果感測器。
 
-## v0.8.0-beta.2 FIFO 同步驗收
+## FIFO 同步驗收
 
 Hub 沿用單一背景工作、單一 Transport 和一筆在途交易。每個 200 ms 目標時點優先排入 0x21；不補送錯過的輪詢。0x25 每 2 秒最多檢查一次，只在輪詢空檔啟動。有效事件先由 executor 寫入 SQLite 並 Commit，再等一筆有效 0x21 後送 0x37；若輪詢失敗，沿用既有輪詢與重連驗證。空佇列視為正常，不寫資料、不送 0x37。門禁控制先設為忙碌，未開始的 FIFO 操作會讓出通訊時機。
 
@@ -202,7 +202,7 @@ Hub 沿用單一背景工作、單一 Transport 和一筆在途交易。每個 2
 歷史明細從既有 `access_events` 資料表以唯讀連線查詢。既有 SQL 可用 `WHERE node_id = 5` 篩選指定站號，例如 `SELECT * FROM access_events WHERE node_id = 5 ORDER BY id DESC LIMIT 100;`。
 資料庫不存在時顯示 0 與空列表，讀取失敗時 Sensor 顯示不可用，下次更新可恢復。
 
-### v0.8.0-beta.7 HA 操作歷史
+### HA 操作歷史
 
 僅記錄 Hub `outcome == "success"` 的控制器接受結果，**不代表實體門磁、鎖舌或實際通行回授**。不記錄 NACK、未送出、結果不明或取消的交易，也不記錄保護設定變更、背景輪詢及 FIFO 內部操作。
 
@@ -261,9 +261,9 @@ content: |-
   {% endif %}
 ```
 
-### beta.7 簡短實機驗收
+### 操作歷史驗收步驟
 
-1. HACS 選取 beta.7 並重啟，確認舊事件、流水號、Sensor ID 與常開保護設定保留。
+1. HACS 選取 v0.8.0 並重啟，確認舊事件、流水號、Sensor ID 與常開保護設定保留。
 2. 從已登入的 HA 分別執行單次開門、常開、解除常開，確認每次成功只增加一筆對應紀錄、名稱與本地時間正確，並人工核對電鎖。
 3. 設常開上限為 1 分鐘，確認自動解除記為 `ha_hold_open_timeout` / 系統，原 beta.6 行為保持正常。
 4. 核對來源不明操作顯示「未知來源」，FIFO 事件及人員編號顯示正常；在受控測試環境確認失敗指令不增加 HA 成功紀錄。

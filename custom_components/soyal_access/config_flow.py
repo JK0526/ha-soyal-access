@@ -5,6 +5,11 @@ import re
 
 import voluptuous as vol
 from homeassistant import config_entries
+from homeassistant.helpers.selector import (
+    NumberSelector,
+    NumberSelectorConfig,
+    NumberSelectorMode,
+)
 
 from .const import DEFAULT_NODE_ID, DEFAULT_PORT, DOMAIN, MAX_NODE_ID, MIN_NODE_ID
 
@@ -31,7 +36,11 @@ def schema(defaults):
             ),
             vol.Required(
                 "node_id", default=defaults.get("node_id", DEFAULT_NODE_ID)
-            ): vol.All(int, vol.Range(min=MIN_NODE_ID, max=MAX_NODE_ID)),
+            ): NumberSelector(
+                NumberSelectorConfig(
+                    min=MIN_NODE_ID, max=MAX_NODE_ID, step=1, mode=NumberSelectorMode.BOX
+                )
+            ),
         }
     )
 
@@ -54,8 +63,15 @@ class SoyalConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 data["host"] = normalized_host(data["host"])
             except vol.Invalid:
                 errors["host"] = "invalid_host"
-            if type(data["node_id"]) is not int:
+            node_id = data["node_id"]
+            if (
+                type(node_id) not in (int, float)
+                or not MIN_NODE_ID <= node_id <= MAX_NODE_ID
+                or node_id % 1
+            ):
                 errors["node_id"] = "invalid_node_id"
+            else:
+                data["node_id"] = int(node_id)
             if not errors:
                 key = f"[{data['host']}]:{data['port']}"
                 await self.async_set_unique_id(key)

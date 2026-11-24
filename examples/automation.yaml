@@ -1,0 +1,67 @@
+alias: SOYAL 門禁歷史查詢
+mode: single
+triggers:
+  - trigger: state
+    entity_id: input_button.input_button_soyal_query
+    from: null
+actions:
+  - variables:
+      node_id: 2  # REPLACE_WITH_NODE_ID，並同步修改 Dashboard 查詢卡
+      query_date: "{{ states('input_datetime.input_datetime_soyal_query_date') }}"
+      user_address: "{{ states('input_number.input_number_soyal_query_user') | float(-1) }}"
+  - if:
+      - condition: template
+        value_template: >-
+          {% set parsed = strptime(query_date, '%Y-%m-%d', none) %}
+          {{ parsed is none or parsed.strftime('%Y-%m-%d') != query_date
+             or node_id is not integer or not 1 <= node_id <= 254
+             or not 0 <= user_address <= 65534 or user_address != user_address | int(-1) }}
+    then:
+      - action: input_text.set_value
+        target:
+          entity_id: input_text.input_text_soyal_query_result
+        data:
+          value: invalid
+      - stop: 查詢條件無效
+
+  - variables:
+      header: "{{ node_id ~ '|' ~ query_date ~ '|' ~ (user_address | int) ~ '|' }}"
+  - action: input_text.set_value
+    target:
+      entity_id: input_text.input_text_soyal_query_result
+    data:
+      value: "{{ header ~ 'running' }}"
+
+  - action: sql.query
+    continue_on_error: true
+    response_variable: sql_reply
+    data:
+      db_url: sqlite:////config/soyal_access_fifo/REPLACE_WITH_ENTRY_ID.sqlite3
+      query: >-
+        SELECT substr(event_time_local, 12, 8) AS event_time,
+          CASE
+            WHEN event_code = 1 AND event_type = 'unknown_event' THEN 'invalid_user_pin'
+            WHEN event_type IN ('card_access', 'pin_access', 'egress', 'invalid_user_pin') THEN event_type
+            ELSE 'unknown_event'
+          END AS kind
+        FROM access_events
+        WHERE source = 'soyal' AND node_id = {{ node_id | int }}
+          AND substr(event_time_local, 1, 10) = '{{ query_date }}'
+          AND user_address = {{ user_address | int }}
+        ORDER BY event_time_local DESC, id DESC
+        LIMIT 5
+
+  - action: input_text.set_value
+    target:
+      entity_id: input_text.input_text_soyal_query_result
+    data:
+      value: >-
+        {%- if sql_reply is not defined or sql_reply.result is not defined -%}
+          {{ header ~ 'error' }}
+        {%- else -%}
+          {%- set rows = namespace(items=[]) -%}
+          {%- for row in sql_reply.result -%}
+            {%- set rows.items = rows.items + [row.event_time ~ '|' ~ row.kind] -%}
+          {%- endfor -%}
+          {{ header ~ 'done|' ~ rows.items | join(';') }}
+        {%- endif -%}

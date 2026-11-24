@@ -1,0 +1,22 @@
+input_datetime:
+  input_datetime_soyal_query_date:
+    name: SOYAL 查詢日期
+    has_date: true
+    has_time: false
+
+input_number:
+  input_number_soyal_query_user:
+    name: SOYAL 人員編號
+    min: 0
+    max: 65534
+    step: 1
+    mode: box
+
+input_button:
+  input_button_soyal_query:
+    name: SOYAL 查詢紀錄
+
+input_text:
+  input_text_soyal_query_result:
+    name: SOYAL 查詢結果
+    max: 255

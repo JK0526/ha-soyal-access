@@ -1,0 +1,240 @@
+# 貼入 Dashboard 的原始設定編輯器。REPLACE_WITH_ENTITY_IDS：
+# 將所有 soyal_ar_725e_node_02_* 範例 ID 換成 HA 內的實際 ID。
+views:
+  - title: SOYAL 門禁
+    path: soyal-access
+    icon: mdi:shield-home-outline
+    type: sections
+    max_columns: 3
+    sections:
+      - type: grid
+        cards:
+          - type: heading
+            heading: 大門控制與狀態
+            icon: mdi:door
+          - type: tile
+            entity: binary_sensor.soyal_ar_725e_node_02_main_door_unlock_output
+            name: 解鎖輸出
+            icon: mdi:lock-open-outline
+            tap_action: {action: none}
+            icon_tap_action: {action: none}
+            grid_options: {columns: 6}
+          - type: tile
+            entity: switch.soyal_ar_725e_node_02_hold_open
+            name: 常開狀態
+            icon: mdi:door-open
+            color: orange
+            tap_action: {action: none}
+            icon_tap_action: {action: none}
+            hold_action: {action: none}
+            icon_hold_action: {action: none}
+            grid_options: {columns: 6}
+          - type: heading
+            heading: 門禁操作
+            heading_style: subtitle
+            icon: mdi:gesture-tap
+            badges:
+              - type: button
+                text: 單次開門
+                icon: mdi:lock-open-outline
+                color: blue
+                tap_action:
+                  action: perform-action
+                  perform_action: button.press
+                  target:
+                    entity_id: button.soyal_ar_725e_node_02_pulse_open
+              - type: button
+                text: 啟用常開
+                icon: mdi:door-open
+                color: orange
+                tap_action:
+                  action: perform-action
+                  perform_action: switch.turn_on
+                  target:
+                    entity_id: switch.soyal_ar_725e_node_02_hold_open
+                  confirmation:
+                    text: 確定要讓大門保持解鎖嗎？
+              - type: button
+                text: 解除常開
+                icon: mdi:lock-outline
+                color: green
+                tap_action:
+                  action: perform-action
+                  perform_action: switch.turn_off
+                  target:
+                    entity_id: switch.soyal_ar_725e_node_02_hold_open
+          - type: tile
+            entity: switch.soyal_ar_725e_node_02_hold_open_timeout_protection
+            name: 超時保護
+            icon: mdi:shield-check
+            tap_action: {action: none}
+            hold_action: {action: none}
+            icon_tap_action: {action: none}
+            icon_hold_action: {action: none}
+            grid_options: {columns: 6}
+          - type: tile
+            entity: number.soyal_ar_725e_node_02_hold_open_timeout
+            name: 超時上限
+            icon: mdi:timer-cog-outline
+            tap_action:
+              action: more-info
+              confirmation:
+                text: 確定要開啟超時上限設定嗎？
+            hold_action: {action: none}
+            icon_tap_action: {action: none}
+            icon_hold_action: {action: none}
+            grid_options: {columns: 6}
+          - type: heading
+            heading: 保護設定
+            heading_style: subtitle
+            icon: mdi:shield-cog-outline
+            badges:
+              - type: button
+                text: 啟用
+                icon: mdi:shield-check
+                color: green
+                tap_action:
+                  action: perform-action
+                  perform_action: switch.turn_on
+                  target:
+                    entity_id: switch.soyal_ar_725e_node_02_hold_open_timeout_protection
+                  confirmation:
+                    text: 確定要啟用常開超時保護嗎？
+              - type: button
+                text: 停用
+                icon: mdi:shield-off-outline
+                color: red
+                tap_action:
+                  action: perform-action
+                  perform_action: switch.turn_off
+                  target:
+                    entity_id: switch.soyal_ar_725e_node_02_hold_open_timeout_protection
+                  confirmation:
+                    text: 確定要停用常開超時保護嗎？
+          - type: markdown
+            content: |-
+              {% set hold = 'switch.soyal_ar_725e_node_02_hold_open' %}
+              {% set status = state_attr(hold, 'timeout_status') %}
+              {% set labels = {'idle': '待命', 'disabled': '已停用', 'active': '計時中',
+                'expired_pending': '已到期，等待解除', 'releasing': '解除中',
+                'failed': '解除失敗', 'uncertain': '交易結果未確認'} %}
+              {% set deadline = as_datetime(state_attr(hold, 'hold_open_deadline'), none) %}
+              **超時保護** · {{ labels.get(status, '狀態未知') }}
+              {% if deadline and status in ['active', 'expired_pending', 'releasing'] %}
+              **剩餘時間** · {{ ([0, (deadline - now()).total_seconds() / 60] | max) | round(0, 'ceil') | int }} 分鐘
+              **預計解除** · {{ as_local(deadline).strftime('%H:%M:%S') }}
+              {% else %}
+              **剩餘時間** · —
+              **預計解除** · —
+              {% endif %}
+              {% if status in ['failed', 'uncertain', 'expired_pending'] or not has_value(hold) or state_attr(hold, 'timeout_restore_safe') == false %}
+              <ha-alert alert-type="error">門禁狀態、解除結果或恢復資料待確認，請檢查連線與現場門鎖。</ha-alert>
+              {% endif %}
+      - type: grid
+        cards:
+          - type: heading
+            heading: 最近門禁事件
+            icon: mdi:history
+          - type: markdown
+            content: |-
+              {% set sensor = 'sensor.soyal_ar_725e_node_02_recent_access_events' %}
+              {% set events = state_attr(sensor, 'events') or [] %}
+              {% set user_map = {100: '範例人員 A', 200: '範例人員 B'} %}
+              {% set kinds = {
+                'card_access': ('刷卡', 'mdi:card-account-details-outline', '#64B5F6'),
+                'pin_access': ('密碼', 'mdi:dialpad', '#64B5F6'),
+                'egress': ('出門', 'mdi:exit-run', '#66BB6A'),
+                'invalid_user_pin': ('無效使用者密碼', 'mdi:alert-circle-outline', '#EF5350'),
+                'ha_pulse_open': ('HA 單次開門', 'mdi:lock-open-outline', '#64B5F6'),
+                'ha_hold_open': ('HA 常開', 'mdi:door-open', '#FFA726'),
+                'ha_release_open': ('HA 解除常開', 'mdi:lock-outline', '#66BB6A'),
+                'ha_hold_open_timeout': ('常開超時解除', 'mdi:timer-off-outline', '#66BB6A'),
+                'unknown_event': ('未知事件', 'mdi:help-circle-outline', '#90A4AE') } %}
+              {% if not has_value(sensor) %}
+              歷史目前無法讀取。
+              {% elif not events %}
+              尚無門禁事件。
+              {% else %}
+              {% set shown = namespace(rows=[]) %}
+              {% for event in events[:40] %}
+                {% set local = event.event_time_local %}
+                {% set received = as_datetime(event.received_at, none) %}
+                {% set stamp = local or (as_local(received).isoformat() if received else '') %}
+                {% set shown.rows = shown.rows + [{'day': stamp[:10] or '日期未知', 'time': stamp[11:19] or '—', 'event': event}] %}
+              {% endfor %}
+              {% for date, rows in shown.rows | groupby('day') | reverse %}
+              #### {{ date }}
+              {% for row in rows -%}
+              {% set event = row.event -%}
+              {% set label, icon, color = kinds.get(event.event_type, kinds.unknown_event) -%}
+              {% set person = (event.ha_user_name or '未知來源') if event.source == 'ha'
+                else user_map.get(event.user_address, '人員 ' ~ event.user_address) -%}
+              - <font color="{{ color }}"><ha-icon icon="{{ icon }}"></ha-icon></font> `{{ row.time }}` · {{ label }} · {{ person | e }}
+              {% endfor %}
+              {% endfor %}
+              {% endif %}
+      - type: grid
+        cards:
+          - type: heading
+            heading: 門禁歷史查詢
+            icon: mdi:database-search-outline
+          - type: tile
+            entity: input_datetime.input_datetime_soyal_query_date
+            name: 日期
+            icon: mdi:calendar
+            grid_options: {columns: 6}
+          - type: tile
+            entity: input_number.input_number_soyal_query_user
+            name: 人員編號
+            icon: mdi:account-search-outline
+            grid_options: {columns: 6}
+          - type: button
+            name: 查詢紀錄
+            icon: mdi:magnify
+            tap_action:
+              action: perform-action
+              perform_action: input_button.press
+              target:
+                entity_id: input_button.input_button_soyal_query
+            grid_options: {columns: 12, rows: 2}
+          - type: markdown
+            content: |-
+              {% set node_id = 2 %}{# REPLACE_WITH_NODE_ID，與 automation.yaml 一致 #}
+              {% set date = states('input_datetime.input_datetime_soyal_query_date') %}
+              {% set person = states('input_number.input_number_soyal_query_user') | int(-1) %}
+              {% set result = states('input_text.input_text_soyal_query_result') %}
+              {% set parts = result.split('|', 4) %}
+              {% set kinds = {
+                'card_access': ('刷卡', 'mdi:card-account-details-outline', '#64B5F6'),
+                'pin_access': ('密碼', 'mdi:dialpad', '#64B5F6'),
+                'egress': ('出門', 'mdi:exit-run', '#66BB6A'),
+                'invalid_user_pin': ('無效使用者密碼', 'mdi:alert-circle-outline', '#EF5350'),
+                'unknown_event': ('未知事件', 'mdi:help-circle-outline', '#90A4AE') } %}
+              {% if result == 'invalid' %}
+              <ha-alert alert-type="error">請檢查查詢日期、人員編號與站號。</ha-alert>
+              {% elif parts | length < 4 %}
+              選擇條件後按「查詢紀錄」。
+              {% elif parts[3] == 'running' %}
+              查詢執行中。
+              {% if parts[:3] != [node_id | string, date, person | string] %}
+              條件已變更，請在本次查詢結束後重新查詢。
+              {% endif %}
+              {% elif parts[:3] != [node_id | string, date, person | string] %}
+              條件已變更，請重新查詢。
+              {% elif parts[3] == 'error' %}
+              <ha-alert alert-type="error">查詢失敗，請檢查 SQL 整合及資料庫路徑。</ha-alert>
+              {% elif parts[3] == 'done' and parts | length == 5 %}
+              {% set rows = parts[4].split(';') if parts[4] else [] %}
+              **查詢結果** · {{ rows | length }} 筆
+              {% if not rows %}
+              查無資料。
+              {% else %}
+              {% for row in rows -%}
+              {% set time, kind = row.split('|', 1) -%}
+              {% set label, icon, color = kinds.get(kind, kinds.unknown_event) -%}
+              - <font color="{{ color }}"><ha-icon icon="{{ icon }}"></ha-icon></font> `{{ time }}` · {{ label }}
+              {% endfor %}
+              {% endif %}
+              {% else %}
+              請重新查詢。
+              {% endif %}

@@ -1,11 +1,11 @@
 # SOYAL Access Control
 
-`v0.8.0-beta.6` 新增常開超時保護，沿用 beta.5 的 TCP、200 ms 輪詢、FIFO 與最近門禁事件功能。此版本為測試預發行版，常開超時保護的現場驗收尚未執行。整合 domain 為 `soyal_access`。
+`v0.8.0-beta.7` 將成功的 HA 門禁操作與 SOYAL FIFO 事件統一保存及顯示。beta.6 常開超時保護已由使用者通過 HA 實機驗收；本版新增歷史紀錄功能仍待使用者實機驗收。整合 domain 為 `soyal_access`。
 
 ## HACS 安裝或更新
 
 1. 若 HACS 尚未有此套件，在自訂儲存庫新增 `https://github.com/JK0526/ha-soyal-access`，類型選 Integration。
-2. 開啟 SOYAL Access Control 的下載或重新下載選單，指定 `v0.8.0-beta.6`，完成後重新啟動 Home Assistant。
+2. 開啟 SOYAL Access Control 的下載或重新下載選單，指定 `v0.8.0-beta.7`，完成後重新啟動 Home Assistant。
 3. 已有 SOYAL Config Entry 會沿用原設定。首次安裝從「設定 → 裝置與服務 → 新增整合」選 SOYAL Access Control，輸入 Host 與 TCP Port。
 
 升級會保留同一 Config Entry、Gateway 設定及現有門禁與狀態實體 ID。FIFO 在背景自動執行，不新增 Home Assistant 實體。新的事件資料寫入 `<HA_CONFIG>/soyal_access_fifo/<entry_id>.sqlite3`；舊版 `<HA_CONFIG>/soyal_access/<entry_id>.sqlite3` 與歷史安全紀錄保持原狀，不會被開啟、覆寫或刪除。版本來源見 [manifest.json](custom_components/soyal_access/manifest.json)，歷史版本見 [CHANGELOG](CHANGELOG.md)。
@@ -120,7 +120,7 @@ cards:
       action: more-info
 ```
 
-### 現場實機驗收（尚未執行）
+### 現場實機驗收（beta.6 已由使用者通過）
 
 1. HACS 選取 `v0.8.0-beta.6` Pre-release 並重啟；確認版本、既有 Entity ID、FIFO 歷史與 Node 02 兩個新設定，預設 ON / 30 min，時間輸入為 BOX。
 2. 於可監看電鎖的受控時段，設為 1 分鐘後常開。記錄 started_at / deadline，確認成功後才開始計時；脈衝開門與再次常開不延長期限。到期只解除一次，現場確認電鎖恢復。
@@ -176,36 +176,80 @@ Hub 沿用單一背景工作、單一 Transport 和一筆在途交易。每個 2
 
 Node 02 的「最近門禁事件」Sensor 狀態為既有 SQLite 的事件總數。
 `events` attribute 依 `id` 由新到舊提供最多 100 筆，每筆包含
-`id`、`received_at`、`event_time_local`、`event_type`、`port`、`user_address`。
+`id`、`received_at`、`event_time_local`、`event_type`、`port`、`user_address`、
+`source`、`ha_user_id`、`ha_user_name`。
 以下內建 Markdown 卡片範例顯示最新 15 筆事件。未知事件不推斷通行結果；缺少欄位時顯示「未知」。
 `user_address` 是控制器使用者位址，姓名與實際通行結果需另有已確認資料才能呈現。
 
-啟動及 FIFO 保存成功後自動透過 executor 更新。
+啟動及 FIFO / HA 操作保存成功後自動透過 executor 更新。
 可使用原生 `homeassistant.update_entity`，指定此 Sensor 的實際 Entity ID 手動重新整理。
 `events` 透過 `unrecorded_attributes` 排除 Recorder 儲存，總數仍可記錄。
 歷史明細從既有 `access_events` 資料表以唯讀連線查詢。
 資料庫不存在時顯示 0 與空列表，讀取失敗時 Sensor 顯示不可用，下次更新可恢復。
 
+### v0.8.0-beta.7 HA 操作歷史
+
+僅記錄 Hub `outcome == "success"` 的控制器接受結果，**不代表實體門磁、鎖舌或實際通行回授**。不記錄 NACK、未送出、結果不明或取消的交易，也不記錄保護設定變更、背景輪詢及 FIFO 內部操作。
+
+| event_type | 顯示 | source | 操作者 |
+| --- | --- | --- | --- |
+| `ha_pulse_open` | 📱 HA 單次開門 | `ha` | 當次 HA Context 使用者 |
+| `ha_hold_open` | 🔓 HA 常開模式 | `ha` | 當次 HA Context 使用者 |
+| `ha_release_open` | 🔒 HA 解除常開 | `ha` | 當次 HA Context 使用者 |
+| `ha_hold_open_timeout` | ⏱️ 常開超時解除 | `ha` | ID 為 NULL，名稱為「系統」 |
+
+Button / Switch 在操作開始時擷取 Context 的 `user_id`，成功後透過 HA 原生 auth API 查詢並保存當次使用者名稱；沒有 Context user_id 或無法識別使用者時，兩個使用者欄位保留 NULL，顯示「未知來源」，不推測為自動化。名稱為當次操作的快照，後續改名不會回寫歷史。每次最多查詢一次，不另建快取。
+
+沿用 `<HA_CONFIG>/soyal_access_fifo/<entry_id>.sqlite3` 的 `access_events`，初始化時使用 `PRAGMA table_info` 檢查，再對缺少欄位執行 `ALTER TABLE ADD COLUMN`：
+
+```sql
+source TEXT NOT NULL DEFAULT 'soyal'
+ha_user_id TEXT DEFAULT NULL
+ha_user_name TEXT DEFAULT NULL
+```
+
+升級可重複執行，保留既有資料與流水號；新舊安裝 schema 一致，舊 FIFO 事件及後續 FIFO 寫入的 source 均為 `soyal`。既有欄位與 SQL 查詢仍可使用；需要只看原生事件時加上 `WHERE source = 'soyal'`。HA 事件的 `node_id=2` 為已知控制目標；`event_code`、`port`、`user_address` 使用 `-1`，`raw_frame_hex` 使用空字串，不偽造 SOYAL 封包或人員編號。
+
+成功回覆時間先以 UTC 記錄，`received_at` 沿用 UTC ISO 格式；HA `event_time_local` 為相同時刻的 HA 本地時間，包含時區。完成原有命令狀態與超時管理、釋放交易鎖及 busy 後，才查詢使用者並透過 HA executor 寫入 SQLite，成功後沿用 `events_signal` 更新 Sensor。歷史儲存失敗只警告，不將控制回報為失敗，不重送、不觸發 FIFO 刪除；不建立常駐歷史工作或背景任務佇列。操作呼叫會等待這筆歷史處理結束，但此時其他控制已可執行。
+
+歷史屬於盡力保存；控制器接受指令後若 HA 中斷或資料庫寫入失敗，可能缺少該筆紀錄，不會為補記歷史重播控制。Sensor 總數包含兩種來源，仍只輸出最新 100 筆、依 id DESC 排序，`events` 不進入 Recorder，保留 `invalid_user_pin` 相容處理與既有 Entity ID / Unique ID。
+
 ### 內建 Markdown 卡片
 
-在 HA Dashboard 編輯模式新增「Markdown」卡片，切換至 YAML 編輯，貼上範例，並將 `sensor.node_02_access_event_history` 換成此 Sensor 的實際 Entity ID：
+編輯現有 Markdown 卡片並貼上下列 YAML，將 `sensor.node_02_access_event_history` 換成實際 Entity ID。最新 15 筆包含兩種來源，SOYAL 事件沿用原本的人員編號顯示：
 
 ```yaml
 type: markdown
 title: 最近門禁事件
-content: >-
+content: |-
   {% set entity = 'sensor.node_02_access_event_history' %}
   {% set events = state_attr(entity, 'events') or [] %}
+  {% set ha_labels = {
+    'ha_pulse_open': '📱 HA 單次開門',
+    'ha_hold_open': '🔓 HA 常開模式',
+    'ha_release_open': '🔒 HA 解除常開',
+    'ha_hold_open_timeout': '⏱️ 常開超時解除'
+  } %}
   {% if not has_value(entity) %}
   歷史資料目前無法讀取。
   {% elif events | count == 0 %}
   尚無門禁事件。
   {% else %}
   {% for event in events[:15] %}
-  {% set event_type = event.get('event_type', 'unknown_event') %}
-  **{{ event.get('event_time_local') or event.get('received_at') or '時間未知' }}** · {% if event_type == 'card_access' %}卡片事件{% elif event_type == 'egress' %}出門事件{% elif event_type == 'pin_access' %}密碼事件{% else %}未知事件{% endif %} · 使用者位址：{{ event.get('user_address', '未知') }} · 門號：{{ event.get('port', '未知') }}
+  {% set kind = event.get('event_type', 'unknown_event') %}
+  {% if event.get('source') == 'ha' and kind in ha_labels %}
+  **{{ event.get('event_time_local') or event.get('received_at') or '時間未知' }}** · {{ ha_labels[kind] }} · {{ event.get('ha_user_name') or '未知來源' }}
+  {% else %}
+  **{{ event.get('event_time_local') or event.get('received_at') or '時間未知' }}** · {% if kind == 'card_access' %}卡片事件{% elif kind == 'egress' %}出門事件{% elif kind == 'pin_access' %}密碼事件{% else %}未知事件{% endif %} · 使用者位址：{{ event.get('user_address', '未知') }} · 門號：{{ event.get('port', '未知') }}
+  {% endif %}
   {% endfor %}
   {% endif %}
 ```
 
-事件依最新優先排列。`event_time_local` 有值時直接顯示控制器本地時間，否則顯示接收時間。此卡只呈現已保存欄位，不顯示未確認的通行成功／失敗結果。新增事件後 Sensor 自動更新，Markdown 卡片隨 HA 狀態更新；不需要安裝額外資源或自訂前端。
+### beta.7 簡短實機驗收
+
+1. HACS 選取 beta.7 並重啟，確認舊事件、流水號、Sensor ID 與常開保護設定保留。
+2. 從已登入的 HA 分別執行單次開門、常開、解除常開，確認每次成功只增加一筆對應紀錄、名稱與本地時間正確，並人工核對電鎖。
+3. 設常開上限為 1 分鐘，確認自動解除記為 `ha_hold_open_timeout` / 系統，原 beta.6 行為保持正常。
+4. 核對來源不明操作顯示「未知來源」，FIFO 事件及人員編號顯示正常；在受控測試環境確認失敗指令不增加 HA 成功紀錄。
+5. 重載整合，確認混合歷史保留、最新 100 筆上限與 Markdown 卡片更新正常。

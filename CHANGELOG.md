@@ -2,6 +2,14 @@
 
 版本來源為 [manifest.json](custom_components/soyal_access/manifest.json)。Git Tag 使用 `v` 前綴。預發佈使用 Semantic Versioning 的 `-beta.N` 或 `-rc.N`，正式版使用不帶預發佈後綴的版本。
 
+## v0.8.0-beta.7
+
+- 成功 HA 單次開門、常開、解除常開與超時解除統一寫入既有 `access_events`；NACK、未送出、結果不明、取消與設定變更不記錄。
+- 以 `PRAGMA table_info` / `ALTER TABLE ADD COLUMN` 相容加入 `source`、`ha_user_id`、`ha_user_name`，保留舊資料及流水號；FIFO 預設來源仍為 `soyal`。
+- Entity 操作開始時擷取 HA Context user_id，保存當次使用者名稱；未知來源為 NULL，超時解除為「系統」。歷史與 auth I/O 均位於交易鎖及 busy 之外，失敗僅警告、不重送控制。
+- 既有歷史 Sensor 增加來源及操作者欄位，總數包含兩種來源；保留最新 100 筆、Recorder 排除與 invalid_user_pin 相容處理。README 更新原生 Markdown 卡片及驗收步驟。
+- 沿用使用者已實機驗收的 beta.6 超時核心；TCP / RS485、200 ms 輪詢、FIFO 刪除、重連安全及既有 Entity 識別不變。beta.7 新功能待使用者實機驗收。
+
 ## v0.8.0-beta.6
 
 - Node 02 新增原生 CONFIG Switch「常開超時保護」（預設 ON）與 BOX Number「常開時間上限」（預設 30 min，1–1440）。包含英文及繁體中文翻譯。

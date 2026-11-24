@@ -29,4 +29,5 @@ class PulseButton(ButtonEntity):
         )
 
     async def async_press(self):
-        await self._hub.pulse()
+        user_id = self._context.user_id if self._context else None
+        await self._hub.pulse(user_id=user_id)

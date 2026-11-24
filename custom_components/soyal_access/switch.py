@@ -50,10 +50,12 @@ class HoldOpenSwitch(SwitchEntity):
         )
 
     async def async_turn_on(self, **kwargs):
-        await self._hub.set_hold_open(True)
+        user_id = self._context.user_id if self._context else None
+        await self._hub.set_hold_open(True, user_id=user_id)
 
     async def async_turn_off(self, **kwargs):
-        await self._hub.set_hold_open(False)
+        user_id = self._context.user_id if self._context else None
+        await self._hub.set_hold_open(False, user_id=user_id)
 
 
 class HoldOpenProtectionSwitch(SwitchEntity):

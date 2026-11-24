@@ -285,13 +285,17 @@ class Hub:
     def can_pulse(self):
         return self.can_query
 
-    async def pulse(self):
-        await self._control(0x84, "pulse")
+    async def pulse(self, *, user_id=None):
+        await self._control(0x84, "pulse", user_id=user_id)
 
-    async def set_hold_open(self, enabled: bool):
-        await self._control(0x82 if enabled else 0x83, "hold open", hold_open=enabled)
+    async def set_hold_open(self, enabled: bool, *, user_id=None):
+        await self._control(
+            0x82 if enabled else 0x83, "hold open", hold_open=enabled, user_id=user_id
+        )
 
-    async def _control(self, action, label, *, hold_open=None, timeout_token=None):
+    async def _control(
+        self, action, label, *, hold_open=None, timeout_token=None, user_id=None
+    ):
         if not self.can_pulse or self.busy:
             raise HomeAssistantError(
                 f"Node 02 {label} was not sent: Gateway unavailable, validating, or busy"
@@ -324,6 +328,7 @@ class Hub:
                 outcome = "nack"
                 raise HomeAssistantError(f"Node 02 rejected the {label} (NACK)")
             outcome = "success"
+            succeeded_at = dt_util.utcnow()
             if hold_open is not None:
                 self.hold_open = hold_open
         except NotSentError as err:
@@ -351,3 +356,42 @@ class Hub:
             finally:
                 self.busy = False
                 self.notify()
+
+        if outcome == "success":
+            event_type = (
+                "ha_hold_open_timeout"
+                if timeout_token is not None
+                else {
+                    0x84: "ha_pulse_open",
+                    0x82: "ha_hold_open",
+                    0x83: "ha_release_open",
+                }[action]
+            )
+            await self._record_ha_operation(event_type, succeeded_at, user_id)
+
+    async def _record_ha_operation(self, event_type, succeeded_at, user_id):
+        """Keep history and auth I/O outside both the transaction lock and busy state."""
+        ha_user_id = None
+        ha_user_name = "系統" if event_type == "ha_hold_open_timeout" else None
+        if user_id is not None and event_type != "ha_hold_open_timeout":
+            try:
+                user = await self._hass.auth.async_get_user(user_id)
+                if user is not None:
+                    ha_user_id, ha_user_name = user_id, user.name
+            except (HomeAssistantError, OSError) as err:
+                _LOGGER.warning("SOYAL HA operation user lookup failed: %s", err)
+        try:
+            await self._hass.async_add_executor_job(
+                self.fifo_storage.save_ha_event,
+                event_type,
+                succeeded_at.isoformat(),
+                dt_util.as_local(succeeded_at).isoformat(),
+                ha_user_id,
+                ha_user_name,
+            )
+        except (OSError, sqlite3.Error) as err:
+            _LOGGER.warning(
+                "SOYAL HA operation history save failed (control succeeded): %s", err
+            )
+            return
+        async_dispatcher_send(self._hass, self.events_signal)

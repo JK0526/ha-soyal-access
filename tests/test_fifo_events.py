@@ -305,7 +305,7 @@ async def test_control_takes_priority_over_saved_event_delete(hass, monkeypatch)
         await pulse
         await next_fifo_request(requests, writer, DELETE)
         await send(writer, STATUS_ACK)
-        assert event_count(hub) == 1
+        assert event_count(hub) == 2  # One FIFO observation and one accepted HA pulse.
         assert await hass.config_entries.async_unload(entry.entry_id)
 
 

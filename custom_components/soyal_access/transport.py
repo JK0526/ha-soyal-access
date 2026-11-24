@@ -6,9 +6,9 @@ from time import monotonic
 
 from .protocol import HEADER, Frame, ProtocolError, decode, encode
 
-# Payload byte 2 mirrors the live I/O byte (unlock output, inputs, ...), so it
-# changes with the door state. Compare every other byte exactly.
-_FIFO_STATUS_MASK = bytes.fromhex("FF FF 00 FF FF FF")
+# Payload byte 2 mirrors live I/O. The last payload byte also varies in
+# captured ACKs (Node 01: 0x74; Node 02: 0x73). Match the remaining bytes.
+_FIFO_STATUS_MASK = bytes.fromhex("FF FF 00 FF FF 00")
 
 
 class NotSentError(ConnectionError):
@@ -24,7 +24,7 @@ class Transport:
         self._query = encode(Frame(node_id, 0x21, b"\x00\x00"))
         self._fifo = encode(Frame(node_id, 0x25))
         self._fifo_delete = encode(Frame(node_id, 0x37))
-        self._fifo_status = bytes([node_id]) + bytes.fromhex("34 10 00 18 73")
+        self._fifo_status = bytes([node_id]) + bytes.fromhex("34 00 00 18 00")
         self._controls = {
             code: encode(Frame(node_id, 0x21, bytes([code])))
             for code in (0x82, 0x83, 0x84)

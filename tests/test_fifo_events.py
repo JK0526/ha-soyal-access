@@ -29,14 +29,14 @@ def event_count(hub):
         return db.execute("SELECT COUNT(*) FROM access_events").fetchone()[0]
 
 
-async def next_fifo_request(requests, writer, packet):
+async def next_fifo_request(requests, writer, packet, *, poll=POLL, io=IO):
     async with asyncio.timeout(4):
         while True:
             _, current = await requests.get()
             if current == packet:
                 return
-            if current == POLL:
-                await send(writer, IO)
+            if current == poll:
+                await send(writer, io)
                 continue
             if packet == POLL and current == FIFO:
                 await send(writer, EMPTY)
@@ -45,27 +45,65 @@ async def next_fifo_request(requests, writer, packet):
                 raise AssertionError(f"Unexpected request: {current.hex(' ')}")
 
 
+@pytest.mark.parametrize(
+    ("node_id", "io", "event", "ack"),
+    [
+        pytest.param(2, IO, event_frame(), STATUS_ACK, id="node02"),
+        pytest.param(
+            1,
+            bytes.fromhex("7E 09 00 03 01 74 10 00 18 81 21"),
+            bytes.fromhex(
+                "7E 1D 00 0B 01 11 1B 10 04 05 08 1A 01 00 14 00 "
+                "00 18 00 21 A3 01 80 F0 60 92 19 4E 58 FF 85"
+            ),
+            bytes.fromhex("7E 0A 00 04 01 34 10 00 18 74 B2 87"),
+            id="node01-field-capture",
+        ),
+    ],
+)
 async def test_event_is_committed_before_delete_and_polling_continues(
-    hass, monkeypatch
+    hass, monkeypatch, node_id, io, event, ack
 ):
     monkeypatch.setattr("custom_components.soyal_access.hub.FIFO_INTERVAL", 0.9)
-    async with gateway(allow_fifo=True, allow_pop=True) as (port, connections):
-        entry = await setup_entry(hass, port, timeout=0.5)
+    poll = encode(Frame(node_id, 0x21, b"\x00\x00"))
+    async with gateway(allow_fifo=True, allow_pop=True, node_id=node_id) as (
+        port,
+        connections,
+    ):
+        entry = await setup_entry(hass, port, timeout=0.5, node_id=node_id)
         hub = entry.runtime_data
-        writer, requests, _ = await next_item(connections)
-        await validate(hub, writer, requests)
+        writer, requests, closed = await next_item(connections)
+        session_id = hub.transport.session_id
+        for _ in range(2):
+            assert (await next_item(requests))[1] == poll
+            await send(writer, io)
+        await eventually(lambda: hub.can_pulse)
 
-        await next_fifo_request(requests, writer, FIFO)
-        await send(writer, event_frame())
+        await next_fifo_request(
+            requests, writer, encode(Frame(node_id, 0x25)), poll=poll, io=io
+        )
+        await send(writer, event)
         await eventually(lambda: hub._fifo_delete_waiting_for_poll)
-        await next_fifo_request(requests, writer, POLL)
-        assert event_count(hub) == 1
-        await send(writer, IO)
-        await next_fifo_request(requests, writer, DELETE)
-        await send(writer, STATUS_ACK)
+        await next_fifo_request(requests, writer, poll, poll=poll, io=io)
+        count, events = await hass.async_add_executor_job(
+            hub.fifo_storage.read_history, node_id
+        )
+        assert count == 1
+        assert (events[0]["node_id"], events[0]["event_type"]) == (
+            node_id,
+            "card_access",
+        )
+        await send(writer, io)
+        await next_fifo_request(
+            requests, writer, encode(Frame(node_id, 0x37)), poll=poll, io=io
+        )
+        await send(writer, ack)
 
-        await next_fifo_request(requests, writer, POLL)
-        await eventually(lambda: hub.node_online)
+        await next_fifo_request(requests, writer, poll, poll=poll, io=io)
+        await send(writer, io)
+        assert not closed.is_set()
+        assert hub.transport.connected and hub.transport.session_id == session_id
+        assert not hub.transport.tainted
         assert event_count(hub) == 1
         assert await hass.config_entries.async_unload(entry.entry_id)
 
@@ -257,7 +295,7 @@ async def test_invalid_extended_empty_reply_reconnects_without_storage(
         await validate(hub, writer, requests)
 
         await next_fifo_request(requests, writer, FIFO)
-        invalid_ack = encode(Frame(0, 4, bytes.fromhex("02 34 10 00 18 72")))
+        invalid_ack = encode(Frame(0, 4, bytes.fromhex("02 35 10 00 18 73")))
         await send(writer, invalid_ack)
         await asyncio.wait_for(closed.wait(), 2)
         new_writer, new_requests, _ = await next_item(connections)
@@ -266,7 +304,19 @@ async def test_invalid_extended_empty_reply_reconnects_without_storage(
         assert await hass.config_entries.async_unload(entry.entry_id)
 
 
-async def test_0x37_rejects_status_change_outside_io_byte(hass, monkeypatch):
+@pytest.mark.parametrize(
+    "invalid_ack",
+    [
+        pytest.param(
+            encode(Frame(0, 4, bytes.fromhex("02 35 50 00 18 73"))), id="fixed-field"
+        ),
+        pytest.param(
+            bytes.fromhex("7E 0A 00 04 01 34 10 00 18 74 B2 87"), id="wrong-source"
+        ),
+        pytest.param(STATUS_ACK[:-1] + b"\x8a", id="bad-checksum"),
+    ],
+)
+async def test_0x37_rejects_invalid_status_ack(hass, monkeypatch, invalid_ack):
     monkeypatch.setattr("custom_components.soyal_access.hub.FIFO_INTERVAL", 0.9)
     async with gateway(allow_fifo=True, allow_pop=True) as (port, connections):
         entry = await setup_entry(hass, port, timeout=0.25)
@@ -280,7 +330,6 @@ async def test_0x37_rejects_status_change_outside_io_byte(hass, monkeypatch):
         await next_fifo_request(requests, writer, POLL)
         await send(writer, IO)
         await next_fifo_request(requests, writer, DELETE)
-        invalid_ack = encode(Frame(0, 4, bytes.fromhex("02 34 50 00 18 72")))
         await send(writer, invalid_ack)
         await asyncio.wait_for(closed.wait(), 2)
         assert event_count(hub) == 1
@@ -316,13 +365,13 @@ async def test_control_takes_priority_over_saved_event_delete(hass, monkeypatch)
         ("02 34 50 00 18 73", True),  # unlock output on
         ("02 34 12 00 18 73", True),  # other I/O bit set
         ("02 34 52 00 18 73", True),  # unlocked and other I/O bit set
-        ("02 34 10 00 18 72", False),  # fixed byte changed
+        ("02 34 50 00 18 74", True),  # both variable bytes changed
         ("02 35 10 00 18 73", False),
         ("03 34 10 00 18 73", False),
         ("02 34 10 00 18", False),  # wrong length
     ],
 )
-def test_status_payload_mask_ignores_only_the_io_byte(payload, accepted):
+def test_status_payload_mask_ignores_io_and_last_payload_byte(payload, accepted):
     from custom_components.soyal_access import transport
 
     assert (

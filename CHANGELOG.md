@@ -2,6 +2,10 @@
 
 版本來源為 [manifest.json](custom_components/soyal_access/manifest.json)。Git Tag 使用 `v` 前綴。預發佈使用 Semantic Versioning 的 `-beta.N` 或 `-rc.N`，正式版使用不帶預發佈後綴的版本。
 
+## v0.8.0-beta.9
+
+- 修正 FIFO 延伸 ACK／NACK 相容性，接受最後一個 payload byte 的實機差異（Node 01 為 `0x74`，Node 02 為 `0x73`）。保留其他封包驗證及先保存再刪除流程。
+
 ## v0.8.0-beta.8
 
 - 首次安裝與重新設定可指定 Node ID 1–254，預設 2。每個 Host＋Port 維持一條 TCP Session 與單站輪詢。

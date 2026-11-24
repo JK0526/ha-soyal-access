@@ -1,11 +1,11 @@
 # SOYAL Access Control
 
-`v0.8.0-beta.8` 支援設定單一 Gateway 所監控的門禁控制器站號。整合 domain 為 `soyal_access`。
+`v0.8.0-beta.9` 修正 FIFO 狀態 ACK 在不同控制器上的相容性。整合 domain 為 `soyal_access`。
 
 ## HACS 安裝或更新
 
 1. 若 HACS 尚未有此套件，在自訂儲存庫新增 `https://github.com/JK0526/ha-soyal-access`，類型選 Integration。
-2. 開啟 SOYAL Access Control 的下載或重新下載選單，指定 `v0.8.0-beta.8`，完成後重新啟動 Home Assistant。
+2. 開啟 SOYAL Access Control 的下載或重新下載選單，指定 `v0.8.0-beta.9`，完成後重新啟動 Home Assistant。
 3. 已有 SOYAL Config Entry 會沿用原設定。首次安裝從「設定 → 裝置與服務 → 新增整合」選 SOYAL Access Control，輸入 Host、TCP Port 與門禁控制器站號。
 
 升級會保留同一 Config Entry、Gateway 設定及現有門禁與狀態實體 ID。FIFO 在背景自動執行，不新增 Home Assistant 實體。新的事件資料寫入 `<HA_CONFIG>/soyal_access_fifo/<entry_id>.sqlite3`；舊版 `<HA_CONFIG>/soyal_access/<entry_id>.sqlite3` 與歷史安全紀錄保持原狀，不會被開啟、覆寫或刪除。版本來源見 [manifest.json](custom_components/soyal_access/manifest.json)，歷史版本見 [CHANGELOG](CHANGELOG.md)。
@@ -16,7 +16,7 @@
 
 既有未設定站號的整合仍使用 Node 02，保留 Config Entry、Device、Entity 識別及原有超時 Store。其他站號各自保存常開超時設定與工作階段。站號變更會重載整合、回收舊連線與計時工作、清除舊站號的有效 Entity／Device 登錄，建立新站號自己的實體。若有在途控制、未結束或未確認的常開工作階段（包含保護關閉時仍在常開），先確認現場並成功解除常開，再切換站號。切換本身不會發送門禁控制。
 
-FIFO 狀態回覆仍嚴格比對原有固定欄位，只有來源站號改為目前設定，I/O 位元組依原規則略過。非 Node 02 的實際通訊與各韌體 FIFO 固定欄位相容性待實機確認。
+FIFO 狀態回覆依目前設定驗證來源站號。Node 01 與 Node 02 的實測 ACK 差異見下方 FIFO 同步驗收說明。
 
 ### beta.8 實機驗收
 
@@ -172,7 +172,7 @@ cards:
 
 Hub 沿用單一背景工作、單一 Transport 和一筆在途交易。每個 200 ms 目標時點優先排入 0x21；不補送錯過的輪詢。0x25 每 2 秒最多檢查一次，只在輪詢空檔啟動。有效事件先由 executor 寫入 SQLite 並 Commit，再等一筆有效 0x21 後送 0x37；若輪詢失敗，沿用既有輪詢與重連驗證。空佇列視為正常，不寫資料、不送 0x37。門禁控制先設為忙碌，未開始的 FIFO 操作會讓出通訊時機。
 
-歷史程式與測試記錄的 Node 02 FIFO 事件為 31-byte frame（length 欄位 `0x1D`），事件 payload 為 25 bytes；已知事件碼 `0x0B`、`0x10`、`0x1C`，其餘事件碼保留原始值與封包。空佇列曾記錄 7-byte 短 ACK，也有 12-byte status ACK：`7E 0A 00 04 02 34 10 00 18 73 B6 8B`。0x37 的歷史成功回覆使用同一個 status ACK；NACK 使用 response code `0x05`，並驗證相同格式的 status payload。兩種指令都允許 I/O 位元組隨門鎖與輸入狀態變動，其餘 payload 欄位維持比對。這些向量來自專案歷史，不取代目標 Gateway 韌體的現場封包確認。
+歷史程式與測試記錄的 Node 02 FIFO 事件為 31-byte frame（length 欄位 `0x1D`），事件 payload 為 25 bytes；已知事件碼 `0x0B`、`0x10`、`0x1C`，其餘事件碼保留原始值與封包。空佇列曾記錄 7-byte 短 ACK，也有 12-byte status ACK：`7E 0A 00 04 02 34 10 00 18 73 B6 8B`。0x37 的歷史成功回覆使用同一個 status ACK；NACK 使用 response code `0x05`，並驗證相同格式的 status payload。兩種指令的延伸 ACK／NACK 使用相同遮罩 `FF FF 00 FF FF 00`，允許 I/O 位元組及最後一個 payload byte 變動。實測刪除 ACK 的末位 payload 在 Node 01 為 `0x74`，Node 02 為 `0x73`。[SOYAL 標準輪詢說明](https://www.soyal.com/news.php?act=view&id=214) 記載 FIFO 讀取、保存與刪除流程，未公開這個位元組的固定值。整合繼續驗證其餘 payload、來源站號、回覆類型、長度及 checksum。
 
 請量測無 FIFO、空佇列、有事件及 FIFO timeout 時的 0x21 平均、最大、P95 間隔與 FIFO 交易耗時。測試模擬結果只作離線排程檢查；實機結果須由目標 EP-E300-485／RS485 環境記錄。交易 timeout 會沿用現有 Transport 關閉 TCP 與退避重連，重連後先恢復 0x21；不自動重送 0x37。
 
